@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include <fmt/format.h>
+#include <fmt/ostream.h>
 
 #include <celephem/xyzvbinary.h>
 #include <celcompat/bit.h>
@@ -81,7 +82,7 @@ static bool binaryToText(const std::string& infilename, const std::string& outfi
         std::memcpy(position.data(), data.data() + offsetof(XYZVBinaryData, position), sizeof(double) * 3);
         std::memcpy(velocity.data(), data.data() + offsetof(XYZVBinaryData, velocity), sizeof(double) * 3);
 
-        fmt::print(out, _("{} {} {} {} {} {} {}\n"),
+        fmt::print(out, "{} {} {} {} {} {} {}\n",
                    tdb,
                    position[0], position[1], position[2],
                    velocity[0], velocity[1], velocity[2]);
