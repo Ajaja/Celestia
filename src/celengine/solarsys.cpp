@@ -1016,10 +1016,11 @@ Body* CreateBody(const std::string& name,
     Surface surface;
     if (disposition == DataDisposition::Modify)
         surface = body->getSurface();
-    else
+    else {
         surface.color = Color(1.0f, 1.0f, 1.0f);
-
-    FillinSurface(planetData, &surface, path, texturePaths);
+        FillinSurface(planetData, &surface, path, texturePaths);
+    }
+    
     body->setSurface(surface);
 
     ReadMesh(*planetData, *body, path, geometryPaths);
