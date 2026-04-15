@@ -229,8 +229,8 @@ FillinSurface(const AssociativeArray* surfaceData,
     bool blendTexture = surfaceData->getBoolean("BlendTexture").value_or(false);
     bool emissive = surfaceData->getBoolean("Emissive").value_or(false);
 
-    if (disposition != DataDisposition::Modify || blendTexture.has_value()) SetOrUnset(surface->appearanceFlags, Surface::BlendTexture, blendTexture);
-    if (disposition != DataDisposition::Modify || emissive.has_value()) SetOrUnset(surface->appearanceFlags, Surface::Emissive, emissive);
+    if (disposition != DataDisposition::Modify || surfaceData->getBoolean("BlendTexture").has_value()) SetOrUnset(surface->appearanceFlags, Surface::BlendTexture, blendTexture);
+    if (disposition != DataDisposition::Modify || surfaceData->getBoolean("Emissive").has_value()) SetOrUnset(surface->appearanceFlags, Surface::Emissive, emissive);
     if (disposition != DataDisposition::Modify || baseTexture.has_value()) SetOrUnset(surface->appearanceFlags, Surface::ApplyBaseTexture, baseTexture.has_value());
     if (disposition != DataDisposition::Modify || (bumpTexture.has_value() || normalTexture.has_value())) SetOrUnset(surface->appearanceFlags, Surface::ApplyBumpMap, (bumpTexture.has_value() || normalTexture.has_value()));
     if (disposition != DataDisposition::Modify || nightTexture.has_value()) SetOrUnset(surface->appearanceFlags, Surface::ApplyNightMap, nightTexture.has_value());
