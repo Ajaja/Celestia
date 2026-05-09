@@ -33,7 +33,7 @@ PointStarVertexBuffer::PointStarVertexBuffer(const Renderer &renderer,
 
 void PointStarVertexBuffer::startSprites()
 {
-    m_prog = m_renderer.getShaderManager().getShader("star");
+    m_prog = m_renderer.getShaderManager().getShader(StaticShader::Star);
     m_pointSizeFromVertex = true;
 }
 
@@ -97,7 +97,7 @@ void PointStarVertexBuffer::setupVertexArrayObject()
     {
         m_initialized = true;
 
-        m_bo = std::make_unique<gl::Buffer>();
+        m_bo = std::make_unique<gl::Buffer>(gl::Buffer::TargetHint::Array);
         m_vo1 = std::make_unique<gl::VertexObject>(gl::VertexObject::Primitive::Points);
         m_vo2 = std::make_unique<gl::VertexObject>(gl::VertexObject::Primitive::Points);
 

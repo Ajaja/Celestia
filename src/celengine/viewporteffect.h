@@ -16,6 +16,7 @@
 
 #include <celrender/gl/buffer.h>
 #include <celrender/gl/vertexobject.h>
+#include "shadermanager.h"
 
 class FramebufferObject;
 class Renderer;
@@ -40,7 +41,7 @@ public:
 class PassthroughViewportEffect : public ViewportEffect
 {
 public:
-    explicit PassthroughViewportEffect(std::string_view shaderName = "passthrough",
+    explicit PassthroughViewportEffect(StaticShader shaderName = StaticShader::Passthrough,
                                        bool needsFloatSource = false);
     ~PassthroughViewportEffect() override = default;
 
@@ -48,11 +49,11 @@ public:
     bool render(Renderer*, FramebufferObject*, int width, int height) override;
 
 private:
-    std::string m_shaderName;
+    StaticShader m_shaderName;
     bool m_needsFloatSource;
 
-    celestia::gl::VertexObject vo{ celestia::util::NoCreateT{} };
-    celestia::gl::Buffer bo{ celestia::util::NoCreateT{} };
+    celestia::gl::VertexObject vo;
+    celestia::gl::Buffer bo;
 
     void initialize();
 
@@ -70,8 +71,8 @@ public:
     bool distortXY(float& x, float& y) override;
 
 private:
-    celestia::gl::VertexObject vo{ celestia::util::NoCreateT{} };
-    celestia::gl::Buffer bo{ celestia::util::NoCreateT{} };
+    celestia::gl::VertexObject vo;
+    celestia::gl::Buffer bo;
 
     std::unique_ptr<WarpMesh> mesh;
 

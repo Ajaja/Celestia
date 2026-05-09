@@ -8,11 +8,12 @@
 // as published by the Free Software Foundation; either version 2
 // of the License, or (at your option) any later version.
 
-#include <array>
 #include "viewporteffect.h"
+
+#include <array>
+
 #include "framebuffer.h"
 #include "render.h"
-#include "shadermanager.h"
 #include "warpmesh.h"
 
 namespace gl = celestia::gl;
@@ -45,7 +46,7 @@ bool ViewportEffect::distortXY(float &x, float &y)
     return true;
 }
 
-PassthroughViewportEffect::PassthroughViewportEffect(std::string_view shaderName,
+PassthroughViewportEffect::PassthroughViewportEffect(StaticShader shaderName,
                                                      bool needsFloatSource) :
     m_shaderName(shaderName),
     m_needsFloatSource(needsFloatSource)
@@ -87,7 +88,7 @@ void PassthroughViewportEffect::initialize()
          1.0f,  1.0f,  1.0f, 1.0f
     };
 
-    vo = gl::VertexObject();
+    vo = gl::VertexObject(gl::VertexObject::Primitive::Triangles);
     bo = gl::Buffer(gl::Buffer::TargetHint::Array, quadVertices, gl::Buffer::BufferUsage::StaticDraw);
 
     vo.setCount(6);
@@ -126,7 +127,7 @@ bool WarpMeshViewportEffect::prerender(Renderer* renderer, FramebufferObject* fb
 
 bool WarpMeshViewportEffect::render(Renderer* renderer, FramebufferObject* fbo, int width, int height)
 {
-    auto *prog = renderer->getShaderManager().getShader("warpmesh");
+    auto *prog = renderer->getShaderManager().getShader(StaticShader::WarpMesh);
     if (prog == nullptr)
         return false;
 
@@ -149,7 +150,7 @@ void WarpMeshViewportEffect::initialize()
         return;
     initialized = true;
 
-    vo = gl::VertexObject();
+    vo = gl::VertexObject(gl::VertexObject::Primitive::Triangles);
     bo = gl::Buffer(gl::Buffer::TargetHint::Array);
 
     mesh->setUpVertexObject(vo, bo);
