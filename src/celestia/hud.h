@@ -19,11 +19,13 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <Eigen/Core>
 
 #include <celastro/date.h>
 #include <celengine/selection.h>
+#include <celestia/overlaymanager.h>
 #include <celestia/textinput.h>
 #include <celestia/textprintposition.h>
 #include <celestia/windowmetrics.h>
@@ -35,7 +37,6 @@
 
 class MovieCapture;
 class Overlay;
-class OverlayImage;
 class Simulation;
 
 namespace celestia
@@ -156,7 +157,9 @@ public:
                        bool editMode);
 
     void showText(const TextPrintPosition&, std::string_view, double duration, double currentTime);
-    void setImage(std::unique_ptr<OverlayImage>&&, double);
+
+    OverlayManager& overlayManager() noexcept { return m_overlayManager; }
+    const OverlayManager& overlayManager() const noexcept { return m_overlayManager; }
 
     HudSettings& hudSettings() noexcept { return m_hudSettings; }
     const HudSettings& hudSettings() const noexcept { return m_hudSettings; }
@@ -173,7 +176,7 @@ private:
 
     std::unique_ptr<Overlay> m_overlay;
 
-    std::unique_ptr<OverlayImage> m_image;
+    OverlayManager m_overlayManager;
 
     std::locale loc;
 

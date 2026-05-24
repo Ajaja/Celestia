@@ -18,7 +18,7 @@
 #include <celengine/body.h>
 #include <celengine/dsodb.h>
 #include <celengine/galaxy.h>
-#include <celengine/overlayimage.h>
+#include <celengine/imageoverlay.h>
 #include <celengine/render.h>
 #include <celengine/selection.h>
 #include <celengine/simulation.h>
@@ -935,13 +935,19 @@ CommandScriptImage::CommandScriptImage(float _duration, float _fadeafter,
 
 void CommandScriptImage::processInstantaneous(ExecutionEnvironment& env)
 {
-    auto image = std::make_unique<OverlayImage>(filename, env.getRenderer());
+    auto image = std::make_unique<ImageOverlay>(filename, env.getRenderer());
     image->setDuration(duration);
     image->setFadeAfter(fadeafter);
     image->setOffset(xoffset, yoffset);
     image->setColor(colors);
     image->fitScreen(fitscreen);
-    env.getCelestiaCore()->setScriptImage(std::move(image));
+    // Legacy `overlay {}` historically allowed only one image on screen.
+    // Preserve that contract by clearing existing images before adding
+    // the new one; scripts that want multiple should use the celx
+    // celestia:addimageoverlay method instead.
+    auto* core = env.getCelestiaCore();
+    core->clearScriptImages();
+    core->addScriptImage(std::move(image));
 }
 
 // Verbosity command
