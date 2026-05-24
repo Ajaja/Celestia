@@ -76,8 +76,8 @@ set(CELENGINE_SOURCES
   orbitsampler.h
   overlay.cpp
   overlay.h
-  overlayimage.cpp
-  overlayimage.h
+  imageoverlay.cpp
+  imageoverlay.h
   parseobject.cpp
   parseobject.h
   perspectiveprojectionmode.cpp
@@ -158,6 +158,13 @@ set(CELENGINE_SOURCES
   warpmesh.cpp
   warpmesh.h
 )
+
+if(ENABLE_FFMPEG)
+  list(APPEND CELENGINE_SOURCES
+    videooverlay.cpp
+    videooverlay.h
+  )
+endif()
 
 add_library(celengine OBJECT ${CELENGINE_SOURCES})
 

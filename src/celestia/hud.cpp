@@ -30,7 +30,6 @@
 #include <celengine/location.h>
 #include <celengine/observer.h>
 #include <celengine/overlay.h>
-#include <celengine/overlayimage.h>
 #include <celengine/rectangle.h>
 #include <celengine/simulation.h>
 #include <celengine/star.h>
@@ -935,8 +934,10 @@ Hud::renderOverlay(const WindowMetrics& metrics,
 
     m_overlay->begin();
 
-    if (m_hudSettings.showOverlayImage && isScriptRunning && m_image != nullptr)
-        m_image->render(static_cast<float>(timeInfo.currentTime), metrics.width, metrics.height);
+    m_overlayManager.render(metrics.width,
+                            metrics.height,
+                            timeInfo.currentTime,
+                            m_hudSettings.showOverlayImage && isScriptRunning);
 
     views.renderBorders(m_overlay.get(), metrics, timeInfo.currentTime);
 
@@ -1344,13 +1345,6 @@ Hud::showText(const TextPrintPosition& position,
     m_messageTextPosition = position;
     m_messageStart = currentTime;
     m_messageDuration = duration;
-}
-
-void
-Hud::setImage(std::unique_ptr<OverlayImage>&& _image, double currentTime)
-{
-    m_image = std::move(_image);
-    m_image->setStartTime(static_cast<float>(currentTime));
 }
 
 } // end namespace celestia
