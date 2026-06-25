@@ -39,11 +39,7 @@
 #include <QModelIndexList>
 #include <QPushButton>
 #include <QRadioButton>
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-#include <QRegExp>
-#else
 #include <QRegularExpression>
-#endif
 #include <QString>
 #include <QTreeView>
 #include <QVariant>
@@ -61,6 +57,7 @@
 #include <celutil/gettext.h>
 #include <celutil/greek.h>
 #include "qtcolorswatchwidget.h"
+#include "qtmarkerutil.h"
 #include "qtinfopanel.h"
 
 namespace celestia::qt
@@ -79,11 +76,7 @@ public:
 
     DeepSkyObjectType objectType{ DeepSkyObjectType::Galaxy };
     bool typeFilterEnabled{false};
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    QRegExp typeFilter;
-#else
     QRegularExpression typeFilter;
-#endif
 };
 
 bool
@@ -95,11 +88,7 @@ DSOFilterPredicate::operator()(const DeepSkyObject* dso) const
     if (!typeFilterEnabled)
         return true;
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    return typeFilter.exactMatch(dso->getType());
-#else
     return typeFilter.match(dso->getType()).hasMatch();
-#endif
 }
 
 class DSOPredicate
@@ -547,17 +536,7 @@ DeepSkyBrowser::DeepSkyBrowser(CelestiaCore* _appCore, QWidget* parent, InfoPane
 
     markerSymbolBox = new QComboBox();
     markerSymbolBox->setEditable(false);
-    markerSymbolBox->addItem(_("None"));
-    markerSymbolBox->addItem(_("Diamond"), (int) MarkerRepresentation::Diamond);
-    markerSymbolBox->addItem(_("Triangle"), (int) MarkerRepresentation::Triangle);
-    markerSymbolBox->addItem(_("Square"), (int) MarkerRepresentation::Square);
-    markerSymbolBox->addItem(_("Plus"), (int) MarkerRepresentation::Plus);
-    markerSymbolBox->addItem(_("X"), (int) MarkerRepresentation::X);
-    markerSymbolBox->addItem(_("Circle"), (int) MarkerRepresentation::Circle);
-    markerSymbolBox->addItem(_("Left Arrow"), (int) MarkerRepresentation::LeftArrow);
-    markerSymbolBox->addItem(_("Right Arrow"), (int) MarkerRepresentation::RightArrow);
-    markerSymbolBox->addItem(_("Up Arrow"), (int) MarkerRepresentation::UpArrow);
-    markerSymbolBox->addItem(_("Down Arrow"), (int) MarkerRepresentation::DownArrow);
+    populateMarkerSymbolComboBox(markerSymbolBox);
     markerSymbolBox->setCurrentIndex(1);
     markerSymbolBox->setToolTip(_("Select marker symbol"));
     markGroupLayout->addWidget(markerSymbolBox, 1, 0);
@@ -629,9 +608,7 @@ DeepSkyBrowser::slotRefreshTable()
     filterPred.typeFilterEnabled = false;
     if (auto filterText = objectTypeFilterBox->text(); !filterText.isEmpty())
     {
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-        QRegExp re(filterText, Qt::CaseInsensitive, QRegExp::Wildcard);
-#elif QT_VERSION < QT_VERSION_CHECK(6, 6, 0)
+#if QT_VERSION < QT_VERSION_CHECK(6, 6, 0)
         auto re = QRegularExpression::fromWildcard(filterText, Qt::CaseInsensitive, QRegularExpression::DefaultWildcardConversion);
 #else
         auto re = QRegularExpression::fromWildcard(filterText, Qt::CaseInsensitive, QRegularExpression::NonPathWildcardConversion);

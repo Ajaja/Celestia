@@ -648,8 +648,8 @@ static int object_getinfo(lua_State* l)
         celx.setTable("albedo", (lua_Number)body->getGeomAlbedo());
         celx.setTable("geomAlbedo", (lua_Number)body->getGeomAlbedo());
         celx.setTable("bondAlbedo", (lua_Number)body->getBondAlbedo());
-        celx.setTable("reflectivity", (lua_Number)body->getReflectivity());
-        celx.setTable("infoURL", body->getInfoURL().c_str());
+        celx.setTable("sphAlbedo", (lua_Number)body->getSphAlbedo());
+        celx.setTable("infoURL", celx.appCore()->getSimulation()->getUniverse()->getInfoURL(body));
         celx.setTable("radius", (lua_Number)body->getRadius());
 
         // TODO: add method to return semiaxes
@@ -728,7 +728,7 @@ static int object_getinfo(lua_State* l)
         celx.setTable("name", location->getName().c_str());
         celx.setTable("size", (lua_Number)location->getSize());
         celx.setTable("importance", (lua_Number)location->getImportance());
-        celx.setTable("infoURL", location->getInfoURL().c_str());
+        celx.setTable("infoURL", celx.appCore()->getSimulation()->getUniverse()->getInfoURL(location));
 
         auto featureType = location->getFeatureType();
         auto &LocationFlagMap = celx.appCore(AllErrors)->scriptMaps().LocationFlagMap;

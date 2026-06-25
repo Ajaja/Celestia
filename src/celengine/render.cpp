@@ -43,6 +43,8 @@
 #include "planetgrid.h"
 #include "pointstarvertexbuffer.h"
 #include "pointstarrenderer.h"
+#include "psfstarvertexbuffer.h"
+#include "starpipelineowner.h"
 #include "orbitsampler.h"
 #include "rendcontext.h"
 #include "textlayout.h"
@@ -61,7 +63,8 @@
 #include <celrender/boundariesrenderer.h>
 #include <celrender/cometrenderer.h>
 #include <celrender/eclipticlinerenderer.h>
-#include <celrender/largestarrenderer.h>
+#include <celrender/legacylargestarrenderer.h>
+#include <celrender/psfglowlargerenderer.h>
 #include <celrender/linerenderer.h>
 #include <celrender/galaxyrenderer.h>
 #include <celrender/globularrenderer.h>
@@ -122,8 +125,6 @@ static constexpr float MaxFarNearRatio      = 2000000.0f;
 
 static constexpr float MinRelativeOccluderRadius = 0.005f;
 
-static constexpr float CoronaHeight = 0.2f;
-
 // Size at which the orbit cache will be flushed of old orbit paths
 static constexpr unsigned int OrbitCacheCullThreshold = 200;
 // Age in frames at which unused orbit paths may be eliminated from the cache
@@ -165,13 +166,18 @@ Renderer::Renderer() :
 #endif
     pointStarVertexBuffer(std::make_unique<PointStarVertexBuffer>(*this, 2048)),
     glareVertexBuffer(std::make_unique<PointStarVertexBuffer>(*this, 2048)),
+    psfPointBuffer(std::make_unique<PsfStarVertexBuffer>(*this, 2048)),
+    psfGlowBuffer(std::make_unique<PsfStarVertexBuffer>(*this, 2048)),
+    m_starPipelineOwner(std::make_unique<celestia::render::StarPipelineOwner>()),
     curvePlotVertexBuffer(std::make_unique<CurvePlotVertexBuffer>(*this)),
     m_atmosphereRenderer(std::make_unique<AtmosphereRenderer>(*this)),
     m_cometRenderer(std::make_unique<CometRenderer>(*this)),
     m_eclipticLineRenderer(std::make_unique<EclipticLineRenderer>(*this)),
     m_galaxyRenderer(std::make_unique<GalaxyRenderer>(*this)),
     m_globularRenderer(std::make_unique<GlobularRenderer>(*this)),
-    m_largeStarRenderer(std::make_unique<LargeStarRenderer>(*this)),
+    m_legacyLargeStarRenderer(std::make_unique<LegacyLargeStarRenderer>(*this)),
+    m_legacyLargeGlareRenderer(std::make_unique<LegacyLargeStarRenderer>(*this)),
+    m_psfGlowLargeRenderer(std::make_unique<PsfGlowLargeRenderer>(*this)),
     m_hollowMarkerRenderer(std::make_unique<LineRenderer>(*this, 1.0f, LineRenderer::PrimType::Lines, LineRenderer::StorageType::Static)),
     m_nebulaRenderer(std::make_unique<NebulaRenderer>(*this)),
     m_openClusterRenderer(std::make_unique<OpenClusterRenderer>(*this)),
@@ -420,6 +426,9 @@ bool Renderer::init(int winWidth, int winHeight,
     m_gaussianDiscTex = BuildGaussianDiscTexture(8);
     m_gaussianGlareTex = BuildGaussianGlareTexture(9);
 
+    m_legacyLargeStarRenderer->setTexture(m_gaussianDiscTex.get());
+    m_legacyLargeGlareRenderer->setTexture(m_gaussianGlareTex.get());
+
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
 
@@ -441,11 +450,10 @@ bool Renderer::init(int winWidth, int winHeight,
 
 void Renderer::resize(int width, int height)
 {
-    windowWidth = width;
-    windowHeight = height;
-    projectionMode->setSize(static_cast<float>(windowWidth), static_cast<float>(windowHeight));
-    // glViewport(windowWidth, windowHeight);
-    m_orthoProjMatrix = math::Ortho2D(0.0f, (float)windowWidth, 0.0f, (float)windowHeight);
+    viewportWidth = width;
+    viewportHeight = height;
+    projectionMode->setSize(static_cast<float>(viewportWidth), static_cast<float>(viewportHeight));
+    m_orthoProjMatrix = math::Ortho2D(0.0f, static_cast<float>(viewportWidth), 0.0f, static_cast<float>(viewportHeight));
 }
 
 void Renderer::setFieldOfView(float _fov)
@@ -457,16 +465,6 @@ void Renderer::setFieldOfView(float _fov)
 int Renderer::getScreenDpi() const
 {
     return screenDpi;
-}
-
-int Renderer::getWindowWidth() const
-{
-    return windowWidth;
-}
-
-int Renderer::getWindowHeight() const
-{
-    return windowHeight;
 }
 
 void Renderer::setScreenDpi(int _dpi)
@@ -492,12 +490,12 @@ float Renderer::getScaleFactor() const
 
 float Renderer::getPointWidth() const
 {
-    return 2.0f / windowWidth * getScaleFactor();
+    return 2.0f / static_cast<float>(viewportWidth) * getScaleFactor();
 }
 
 float Renderer::getPointHeight() const
 {
-    return 2.0f / windowHeight * getScaleFactor();
+    return 2.0f / static_cast<float>(viewportHeight) * getScaleFactor();
 }
 
 void Renderer::setFaintestAM45deg(float _faintestAutoMag45deg)
@@ -760,7 +758,7 @@ void Renderer::addAnnotation(vector<Annotation>& annotations,
                              float size,
                              bool special)
 {
-    std::array<int, 4> view{ 0, 0, windowWidth, windowHeight };
+    std::array<int, 4> view{ 0, 0, viewportWidth, viewportHeight };
     Vector3f win;
     bool success = projectionMode->project(pos, m_modelMatrix, m_projMatrix, m_MVPMatrix, view, win);
     if (success)
@@ -769,6 +767,13 @@ void Renderer::addAnnotation(vector<Annotation>& annotations,
                       pos.y() * m_modelMatrix(2, 1) +
                       pos.z() * m_modelMatrix(2, 2);
         win.z() = -depth;
+
+        // Discard annotations behind the camera (negative win.z);
+        // they are never rendered and would corrupt the near plane
+        // in buildDepthPartitions.
+        if (win.z() <= 0.0f)
+            return;
+
         // use round to remove precision error (+/- 0.0000x)
         // which causes label jittering
         float x = round(win.x());
@@ -1299,7 +1304,7 @@ setupSecondaryLightSources(vector<SecondaryIlluminator>& secondaryIlluminators,
             i.reflectedIrradiance += j.luminosity / ((float) (i.position_v - j.position).squaredNorm() * au2);
         }
 
-        i.reflectedIrradiance *= i.body->getReflectivity();
+        i.reflectedIrradiance *= i.body->getGeomAlbedo();
     }
 }
 
@@ -1331,6 +1336,15 @@ void Renderer::renderItem(const RenderListEntry& rle,
                      observer,
                      nearPlaneDistance, farPlaneDistance,
                      m);
+        break;
+
+    case RenderListEntry::RenderableRingSystem:
+        renderRingSystem(*rle.body,
+                         rle.position,
+                         rle.distance,
+                         observer,
+                         nearPlaneDistance,
+                         m);
         break;
 
     case RenderListEntry::RenderableCometTail:
@@ -1620,70 +1634,219 @@ Renderer::calculatePointSize(float appMag,
 // jarring, however . . . so we'll blend in the particle view of the
 // object to smooth things out, making it dimmer as the disc size exceeds the
 // max disc size.
-void Renderer::renderObjectAsPoint(const Vector3f& position,
-                                   float radius,
+void Renderer::renderObjectAsPoint(const PointObjectInfo& info,
                                    float appMag,
                                    float discSizeInPixels,
                                    const Color &color,
                                    bool useHalos,
-                                   bool emissive,
-                                   const Matrices &mvp)
+                                   bool emissive)
 {
+    const Vector3f& position = info.position;
+    float radius = info.radius;
+    // In PSF mode, route through the PSF path when the body is a
+    // genuine light source (stars), or when it's still unresolved
+    // (any body — the point representation works regardless of
+    // whether it emits).  A resolved reflective body is excluded
+    // because the PSF's radial falloff inevitably paints a bright
+    // saturated core inside the mesh and a dim tail extending many
+    // disc radii past the limb, both of which are visible artifacts
+    // on a planet whose true visual is just the sharp-edged disc.
+    if (starStyle == StarStyle::PointSpreadFunction)
+    {
+        float pointScale = static_cast<float>(screenDpi) / 96.0f;
+        addStarAsPsfPoint(info, color, appMag, pointScale, discSizeInPixels, emissive);
+        return;
+    }
+
     const bool useScaledDiscs = starStyle == StarStyle::ScaledDiscStars;
     float maxDiscSize = useScaledDiscs ? MaxScaledDiscStarSize : 1.0f;
     float maxBlendDiscSize = maxDiscSize + 3.0f;
 
-    if (discSizeInPixels < maxBlendDiscSize || useHalos)
+    if (discSizeInPixels >= maxBlendDiscSize && !useHalos) return;
+
+    float fade = 1.0f;
+    if (discSizeInPixels > maxDiscSize)
     {
-        float fade = 1.0f;
-        if (discSizeInPixels > maxDiscSize)
-        {
-            fade = std::min(1.0f, (maxBlendDiscSize - discSizeInPixels) /
-                                  (maxBlendDiscSize - maxDiscSize));
-        }
+        fade = std::min(1.0f, (maxBlendDiscSize - discSizeInPixels) /
+                        (maxBlendDiscSize - maxDiscSize));
+    }
 
-        float scale = static_cast<float>(screenDpi) / 96.0f;
-        float pointSize, alpha, glareSize, glareAlpha;
-        calculatePointSize(appMag, BaseStarDiscSize * scale, pointSize, alpha, glareSize, glareAlpha);
+    float scale = static_cast<float>(screenDpi) / 96.0f;
+    float pointSize, alpha, glareSize, glareAlpha;
+    calculatePointSize(appMag, BaseStarDiscSize * scale, pointSize, alpha, glareSize, glareAlpha);
 
-        if (useScaledDiscs && discSizeInPixels > MaxScaledDiscStarSize)
-            glareAlpha = std::min(glareAlpha, (MaxScaledDiscStarSize - discSizeInPixels) / MaxScaledDiscStarSize + 1.0f);
+    if (useScaledDiscs && discSizeInPixels > MaxScaledDiscStarSize)
+        glareAlpha = std::min(glareAlpha, (MaxScaledDiscStarSize - discSizeInPixels) / MaxScaledDiscStarSize + 1.0f);
 
-        alpha *= fade;
-        if (!emissive)
-            glareAlpha *= fade;
+    alpha *= fade;
+    if (!emissive)
+        glareAlpha *= fade;
 
-        if (glareSize != 0.0f)
-            glareSize = std::max(glareSize, pointSize * discSizeInPixels / scale * 3.0f);
+    if (glareSize != 0.0f)
+        glareSize = std::max(glareSize, pointSize * discSizeInPixels / scale * 3.0f);
 
-        Renderer::PipelineState ps;
-        ps.blending = true;
-        ps.blendFunc = {GL_SRC_ALPHA, GL_ONE};
-        ps.depthTest = true;
-        setPipelineState(ps);
+    Renderer::PipelineState ps;
+    ps.blending = true;
+    ps.blendFunc = {GL_SRC_ALPHA, GL_ONE};
+    ps.depthTest = true;
+    setPipelineState(ps);
 
-        if (starStyle != StarStyle::PointStars)
-            m_gaussianDiscTex->bind();
+    if (starStyle != StarStyle::PointStars)
+        m_gaussianDiscTex->bind();
 
-        if (pointSize > gl::maxPointSize)
-            m_largeStarRenderer->render(position, {color, alpha}, pointSize, mvp);
+    Eigen::Vector3f frontPos = calculateQuadCenter(getCameraOrientationf(), position, radius);
+
+    if (pointSize > gl::maxPointSize)
+        m_legacyLargeStarRenderer->addStar(frontPos, {color, alpha}, pointSize);
+    else
+        pointStarVertexBuffer->addStar(frontPos, {color, alpha}, pointSize);
+
+    // If the object is brighter than magnitude 1, add a halo around it to
+    // make it appear more brilliant.  This is a hack to compensate for the
+    // limited dynamic range of monitors.
+    //
+    // TODO: Stars look fine but planets look unrealistically bright
+    // with halos.
+    if (useHalos && glareAlpha > 0.0f)
+    {
+        m_gaussianGlareTex->bind();
+        if (glareSize > gl::maxPointSize)
+            m_legacyLargeGlareRenderer->addStar(frontPos, {color, glareAlpha}, glareSize);
         else
-            pointStarVertexBuffer->addStar(position, {color, alpha}, pointSize);
+            glareVertexBuffer->addStar(frontPos, {color, glareAlpha}, glareSize);
+    }
+}
 
-        // If the object is brighter than magnitude 1, add a halo around it to
-        // make it appear more brilliant.  This is a hack to compensate for the
-        // limited dynamic range of monitors.
-        //
-        // TODO: Stars look fine but planets look unrealistically bright
-        // with halos.
-        if (useHalos && glareAlpha > 0.0f)
+
+// Alpha for the disc-pinned PSF glow: 1 at the distance where
+// glowPeak == linkedGlowPeak (bloom just reaches the limb), 0 at
+// the body's surface.  In the saturated regime glowPeak is roughly
+// constant in d while linkedGlowPeak ∝ 1/d^2.5, so the match
+// distance is d_match = d_now * (linkedGlowPeak / glowPeak)^(1/2.5).
+static float
+computePsfGlowAlpha(float distance, float radius,
+                    float linkedGlowPeak, float glowPeak)
+{
+    if (radius <= 0.0f)
+        return 1.0f;
+    float distToSurface = distance - radius;
+    float distMatch     = distance * std::pow(linkedGlowPeak / glowPeak, 0.4f);
+    float distToMatch   = distMatch - radius;
+    if (distToMatch <= 0.0f)
+        return 0.0f;
+    return std::clamp(distToSurface / distToMatch, 0.0f, 1.0f);
+}
+
+
+void Renderer::addStarAsPsfPoint(const PointObjectInfo &info,
+                                 const Color    &color,
+                                 float           appMag,
+                                 float           pointScale,
+                                 float           discSizeInPixels,
+                                 bool            emissive)
+{
+    const Vector3f& position = info.position;
+    float distance = info.distance;
+    float radius   = info.radius;
+    // Mirrors the PSF math in PointStarRenderer::process for far stars,
+    // but submits to the same psfPointBuffer / psfGlowBuffer with KM-scale
+    // positions.  The buffers are drained per-interval inside
+    // renderSolarSystemObjects, which uses the per-interval (km-scale)
+    // projection — this is what lets close stars (e.g. Sol at 1 AU)
+    // escape the ly-scale near plane of renderPointStars.
+    //
+    // Pre-set the PSF pipeline state so that an auto-flush from
+    // addStar() (when a buffer fills) draws with the correct blending.
+    Renderer::PipelineState ps;
+    ps.blending  = true;
+    ps.blendFunc = {GL_ONE, GL_ONE};
+    ps.depthTest = true;
+    setPipelineState(ps);
+
+    const Vector3f &spritePos = position;
+    Vector3f frontPos = calculateQuadCenter(getCameraOrientationf(), spritePos, radius);
+
+    float exposureFactor = std::max(starExposure, 1.0e-6f);
+    float r              = std::max(starPointRadius, 1.0e-3f);
+    float peakRadScale   = exposureFactor * 3.0f
+                           / (celestia::numbers::pi_v<float> * r * r);
+    float irradiance     = astro::magToIrradiance(appMag);
+    float peakRad        = peakRadScale * irradiance;
+
+    float dimGate = (celestia::gl::sRGBRendering
+                        ? astro::LOWEST_IRRADIATION_SRGB
+                        : astro::LOWEST_IRRADIATION)
+                    * starDimClipFactor;
+
+    // Hyperbolic soft-clip: stars with peakRad close to dimGate fade
+    // smoothly toward zero, while peakRad >> dimGate is asymptotically
+    // unchanged.  See issue #2559.
+    if (peakRad <= dimGate)
+        return;
+    peakRad = std::sqrt(peakRad * peakRad - dimGate * dimGate);
+
+    float greenScale = 1.0f;
+    Color linearStarColor = psfGreenNormalization(color, 0.1f, greenScale);
+    float peakRadCol = peakRad * greenScale;
+
+    // Suppress the cone-cap sprite once the body is resolved as a
+    // mesh; the linked glow below handles the bloom around the disc.
+    if (discSizeInPixels <= 1.0f)
+        psfPointBuffer->addStar(frontPos, linearStarColor, peakRadCol);
+
+    // Peak radiance whose bloom radius (per the shader's PSF formula)
+    // equals the body's angular disc.
+    float a    = starOptimization / r;
+    float invB = celestia::numbers::pi_v<float> / r - a;
+    float angR = discSizeInPixels / pointScale;
+    float linkedGlowPeak = std::pow(angR * (a + invB), 2.5f);
+
+    // Gate on the irradiance-based peak so the linked term only
+    // enhances an already-firing glow, never starts one (keeps
+    // reflective bodies with large angular radius from blooming).
+    if (peakRadCol > 1.0f && starOptimization > 0.0f)
+    {
+        float glowPeak = peakRadCol;
+        if (starMaxIrradiance > 0.0f)
         {
-            Eigen::Vector3f center = calculateQuadCenter(getCameraOrientationf(), position, radius);
-            m_gaussianGlareTex->bind();
-            if (glareSize > gl::maxPointSize)
-                m_largeStarRenderer->render(center, {color, glareAlpha}, glareSize, mvp);
-            else
-                glareVertexBuffer->addStar(center, {color, glareAlpha}, glareSize);
+            glowPeak = (1.0f - 1.0f / (peakRadCol / starMaxIrradiance + 1.0f))
+                       * starMaxIrradiance;
+        }
+        // Always render the glow in front of the body (calculateQuadCenter
+        // puts it on the near-side tangent plane).  Skip entirely for
+        // resolved reflective bodies that aren't bright enough to overflow.
+        if (glowPeak <= linkedGlowPeak && !emissive)
+            return;
+
+        Vector3f glowPos = frontPos;
+        // Size tracks whichever peak is larger: glowPeak in the far/overflow
+        // regime, linkedGlowPeak once the disc resolves so the sprite keeps
+        // pace with the growing disc instead of capping at starMaxIrradiance.
+        float glowPeakToUse = std::max(glowPeak, linkedGlowPeak);
+
+        // Fade alpha 1 → 0 between d_match and the body surface so the
+        // sprite vanishes smoothly as the disc takes over.
+        float alpha = computePsfGlowAlpha(distance, radius, linkedGlowPeak, glowPeak);
+        if (alpha <= 0.0f)
+            return;
+        Color glowColor(linearStarColor, alpha);
+
+        // Fast oversize check: avoid computing pow unless we actually
+        // need sizePhys.  sizePhys > maxPointSize is equivalent to
+        // glowPeak > (maxPointSize * a / (2 * pointScale))^2.5.
+        float glowPeakLargeThreshold = std::pow(static_cast<float>(celestia::gl::maxPointSize)
+                                                * a / (2.0f * pointScale),
+                                                2.5f);
+
+        if (glowPeakToUse > glowPeakLargeThreshold)
+        {
+            // Oversize glow (typical for Sol at ~1 AU): hand it to the
+            // batched billboard renderer.
+            m_psfGlowLargeRenderer->addStar(glowPos, glowColor, glowPeakToUse);
+        }
+        else
+        {
+            psfGlowBuffer->addStar(glowPos, glowColor, glowPeakToUse);
         }
     }
 }
@@ -1717,6 +1880,9 @@ static void renderSphereUnlit(const RenderInfo& ri,
         textures.push_back(ri.overlayTex);
     }
 
+    if (ri.isStar)
+        shadprop.lightModel = LightingModel::StarModel;
+
     // Get a shader for the current rendering configuration
     auto* prog = r->getShaderManager().getShader(shadprop);
     if (prog == nullptr)
@@ -1727,6 +1893,8 @@ static void renderSphereUnlit(const RenderInfo& ri,
     prog->textureOffset = 0.0f;
     prog->ambientColor = ri.color.toVector3();
     prog->opacity = 1.0f;
+    if (ri.isStar)
+        prog->eyePosition = ri.eyePos_obj;
 
     Renderer::PipelineState ps;
     ps.depthMask = true;
@@ -2133,15 +2301,19 @@ void Renderer::renderObject(const Vector3f& pos,
     // Get the textures . . .
     if (obj.surface->baseTexture != util::TextureHandle::Invalid)
         ri.baseTex = m_textureManager->find(obj.surface->baseTexture);
-    if ((obj.surface->appearanceFlags & Surface::ApplyBumpMap) != 0 &&
+    if (util::is_set(obj.surface->appearanceFlags, Surface::Flags::ApplyBumpMap) &&
         obj.surface->bumpTexture != util::TextureHandle::Invalid)
+    {
         ri.bumpTex = m_textureManager->find(obj.surface->bumpTexture);
-    if ((obj.surface->appearanceFlags & Surface::ApplyNightMap) != 0 &&
+    }
+    if (util::is_set(obj.surface->appearanceFlags, Surface::Flags::ApplyNightMap) &&
         util::is_set(renderFlags, RenderFlags::ShowNightMaps))
+    {
         ri.nightTex = m_textureManager->find(obj.surface->nightTexture);
-    if ((obj.surface->appearanceFlags & Surface::SeparateSpecularMap) != 0)
+    }
+    if (util::is_set(obj.surface->appearanceFlags, Surface::Flags::SeparateSpecularMap))
         ri.glossTex = m_textureManager->find(obj.surface->specularTexture);
-    if ((obj.surface->appearanceFlags & Surface::ApplyOverlay) != 0)
+    if (util::is_set(obj.surface->appearanceFlags, Surface::Flags::ApplyOverlay))
         ri.overlayTex = m_textureManager->find(obj.surface->overlayTexture);
 
     // Scaling will be nonuniform for nonspherical planets. As long as the
@@ -2186,11 +2358,12 @@ void Renderer::renderObject(const Vector3f& pos,
 
     Matrices ringsMVP;
     Matrix4f ringsMV;
-    bool showRings = obj.rings != nullptr && util::is_set(renderFlags, RenderFlags::ShowPlanetRings);
+    // Outside rings are rendered separately at the end of a depth partition
+    bool showRings = obj.rings != nullptr && util::is_set(renderFlags, RenderFlags::ShowPlanetRings) && distance <= obj.rings->innerRadius;
     if (showRings)
     {
         ringsMV  = (*m.modelview) * (transform * Scaling(ringsScaleFactor)).matrix();
-        ringsMVP = { m.projection, &ringsMV  };
+        ringsMVP = { m.projection, &ringsMV };
     }
 
     Matrix3f planetRotation = obj.orientation.toRotationMatrix();
@@ -2204,7 +2377,7 @@ void Renderer::renderObject(const Vector3f& pos,
 
     // Set up the colors
     if (ri.baseTex == nullptr ||
-        (obj.surface->appearanceFlags & Surface::BlendTexture) != 0)
+        util::is_set(obj.surface->appearanceFlags, Surface::Flags::BlendTexture))
     {
         ri.color = obj.surface->color.linearize(gl::sRGBRendering);
     }
@@ -2215,7 +2388,7 @@ void Renderer::renderObject(const Vector3f& pos,
     ri.lunarLambert = obj.surface->lunarLambert;
 
     // See if the surface should be lit
-    bool lit = (obj.surface->appearanceFlags & Surface::Emissive) == 0;
+    bool lit = !util::is_set(obj.surface->appearanceFlags, Surface::Flags::Emissive);
 
     // The sphere rendering code uses the view frustum to determine which
     // patches are visible. In order to avoid rendering patches that can't
@@ -2299,6 +2472,7 @@ void Renderer::renderObject(const Vector3f& pos,
         }
         else
         {
+            ri.isStar = obj.isStar;
             renderSphereUnlit(ri, viewFrustum, planetMVP, this, m_lodSphere.get());
         }
     }
@@ -2329,19 +2503,15 @@ void Renderer::renderObject(const Vector3f& pos,
         glActiveTexture(GL_TEXTURE0);
     }
 
-    float segmentSizeInPixels = 0.0f;
     if (showRings)
     {
         // calculate ring segment size in pixels, actual size is segmentSizeInPixels * tan(segmentAngle)
-        segmentSizeInPixels = 2.0f * obj.rings->outerRadius / (max(nearPlaneDistance, altitude) * pixelSize);
-        if (distance <= obj.rings->innerRadius)
-        {
-            m_ringRenderer->renderRings(*obj.rings, ri, ls,
-                                        radius, 1.0f - obj.semiAxes.y(),
-                                        util::is_set(renderFlags, RenderFlags::ShowRingShadows) && lit,
-                                        segmentSizeInPixels,
-                                        ringsMVP, true);
-        }
+        float segmentSizeInPixels = 2.0f * obj.rings->outerRadius / (max(nearPlaneDistance, altitude) * pixelSize);
+        m_ringRenderer->renderRings(*obj.rings, ri, ls,
+                                    radius, 1.0f - obj.semiAxes.y(),
+                                    util::is_set(renderFlags, RenderFlags::ShowRingShadows) && lit,
+                                    segmentSizeInPixels,
+                                    ringsMVP, true);
     }
 
     if (atmosphere != nullptr)
@@ -2443,25 +2613,6 @@ void Renderer::renderObject(const Vector3f& pos,
 
             glDisable(GL_POLYGON_OFFSET_FILL);
             glFrontFace(GL_CCW);
-        }
-    }
-
-    if (showRings)
-    {
-        if (lit && util::is_set(renderFlags, RenderFlags::ShowRingShadows))
-        {
-            Texture* ringsTex = m_textureManager->find(obj.rings->texture);
-            if (ringsTex != nullptr)
-                ringsTex->bind();
-        }
-
-        if (distance > obj.rings->innerRadius)
-        {
-            m_ringRenderer->renderRings(*obj.rings, ri, ls,
-                                        radius, 1.0f - obj.semiAxes.y(),
-                                        util::is_set(renderFlags, RenderFlags::ShowRingShadows) && lit,
-                                        segmentSizeInPixels,
-                                        ringsMVP, false);
         }
     }
 }
@@ -2814,12 +2965,9 @@ void Renderer::renderPlanet(Body& body,
             }
             lod = min(lod, maxLod);
 
-            // Not all hardware/drivers support GLSL's textureXDLOD instruction, which lets
-            // us explicitly set the LOD. But, they do all have an optional lodBias parameter
-            // for the textureXD instruction. The bias is just the difference between the
-            // area light LOD and the approximate GPU calculated LOD.
-            if (!gl::ARB_shader_texture_lod)
-                lod = max(0.0f, lod - gpuLod);
+            // textureLod() is core in GLSL 1.30+ / GLSL ES 3.00, which is now
+            // the floor; the explicit LOD is always honored, so no bias-fallback
+            // adjustment is needed here.
             lights.ringShadows[li].texLod = lod;
         }
 
@@ -2849,14 +2997,115 @@ void Renderer::renderPlanet(Body& body,
         const auto surfaceColor = body.getSurface().color.linearize(gl::sRGBRendering);
         if (float maxCoeff = surfaceColor.toVector3().maxCoeff(); maxCoeff > 0.0f) // ignore [ 0 0 0 ]; used by old addons to make objects not get rendered as point
         {
-            renderObjectAsPoint(pos,
-                                body.getRadius(),
+            renderObjectAsPoint(PointObjectInfo{pos, distance, body.getRadius()},
                                 appMag,
                                 discSizeInPixels,
                                 surfaceColor * (1.0f / maxCoeff), // normalize point color; 'darkness' is handled by size of point determined by GeomAlbedo.
-                                false, false, m);
+                                false, false);
         }
     }
+}
+
+
+void Renderer::renderRingSystem(Body& body,
+                                const Vector3f& pos,
+                                float distance,
+                                const Observer& observer,
+                                float nearPlaneDistance,
+                                const Matrices &m)
+{
+    const BodyFeaturesManager* bodyFeaturesManager = GetBodyFeaturesManager();
+
+    const RingSystem* rings = bodyFeaturesManager->getRings(&body);
+    if (rings == nullptr || !util::is_set(renderFlags, RenderFlags::ShowPlanetRings))
+        return;
+
+    double now = observer.getTime();
+    float radius = body.getRadius();
+    float altitude = distance - radius;
+
+    // Replicate the subset of renderPlanet's setup needed for ring shading:
+    // orientation, scale factors, and a LightingState.
+    const Surface* surface;
+    if (displayedSurface.empty())
+    {
+        surface = &body.getSurface();
+    }
+    else
+    {
+        surface = bodyFeaturesManager->getAlternateSurface(&body, displayedSurface);
+        if (surface == nullptr)
+            surface = &body.getSurface();
+    }
+
+    Vector3f semiAxes = body.getSemiAxes() / radius;
+    Quaterniond q = body.getRotationModel(now)->spin(now) *
+                    body.getEclipticToEquatorial(now);
+    Quaternionf bodyOrientation = body.getGeometryOrientation() * q.cast<float>();
+
+    // Determine geometry scale and ring scale factor (matches renderObject).
+    engine::GeometryHandle geomHandle = body.getGeometry();
+    const RenderGeometry* geometry = nullptr;
+    if (geomHandle != engine::GeometryHandle::Invalid)
+        geometry = m_geometryManager->find(geomHandle);
+
+    Vector3f scaleFactors;
+    float ringsScaleFactor;
+    bool isNormalized = false;
+    if (geometry == nullptr || geometry->isNormalized())
+    {
+        scaleFactors = radius * semiAxes;
+        ringsScaleFactor = radius * semiAxes.maxCoeff();
+        isNormalized = true;
+    }
+    else
+    {
+        float geometryScale = body.getGeometryScale();
+        scaleFactors = Vector3f::Constant(geometryScale);
+        ringsScaleFactor = geometryScale;
+    }
+
+    LightingState lights;
+    setupObjectLighting(lightSourceList,
+                        secondaryIlluminators,
+                        bodyOrientation,
+                        scaleFactors,
+                        pos,
+                        isNormalized,
+                        lights);
+    assert(lights.nLights <= MaxLights);
+    lights.ambientColor = ambientColor.toVector3();
+
+    // Build the rings model-view matrix.
+    Affine3f transform = Translation3f(pos) * bodyOrientation.conjugate();
+    Matrix4f ringsMV = (*m.modelview) * (transform * Scaling(ringsScaleFactor)).matrix();
+    Matrices ringsMVP = { m.projection, &ringsMV };
+
+    // Populate only the RenderInfo fields read by RingRenderer::renderRings:
+    // color, ambientColor, specularColor. Mirror renderObject's color rule so
+    // the ring tint stays consistent for textured vs untextured bodies.
+    RenderInfo ri;
+    const Texture* baseTex = nullptr;
+    if (surface->baseTexture != util::TextureHandle::Invalid)
+        baseTex = m_textureManager->find(surface->baseTexture);
+    if (baseTex == nullptr || util::is_set(surface->appearanceFlags, Surface::Flags::BlendTexture))
+        ri.color = surface->color.linearize(gl::sRGBRendering);
+    ri.ambientColor = ambientColor;
+    ri.specularColor = surface->specularColor.linearize(gl::sRGBRendering);
+
+    // Self-shadow of the body on the rings requires at least one lit light
+    // source and the user setting.
+    bool lit = !util::is_set(surface->appearanceFlags, Surface::Flags::Emissive);
+    bool renderShadow = lit && util::is_set(renderFlags, RenderFlags::ShowRingShadows);
+
+    float segmentSizeInPixels = 2.0f * rings->outerRadius / (max(nearPlaneDistance, altitude) * pixelSize);
+
+    m_ringRenderer->renderRings(*rings, ri, lights,
+                                radius, 1.0f - semiAxes.y(),
+                                renderShadow,
+                                segmentSizeInPixels,
+                                ringsMVP,
+                                false);
 }
 
 
@@ -2887,22 +3136,24 @@ void Renderer::renderStar(const Star& star,
             surface.baseTexture = mtex;
         else
             surface.baseTexture = util::TextureHandle::Invalid;
-        surface.appearanceFlags |= Surface::ApplyBaseTexture;
-        surface.appearanceFlags |= Surface::Emissive;
+        surface.appearanceFlags |= Surface::Flags::ApplyBaseTexture;
+        surface.appearanceFlags |= Surface::Flags::Emissive;
 
+        rp.isStar = true;
         rp.surface = &surface;
         rp.rings = nullptr;
         rp.radius = star.getRadius();
         rp.semiAxes = star.getEllipsoidSemiAxes();
         rp.geometry = star.getGeometry();
 
+#if 0 // disabled for limb darkening
         Atmosphere atmosphere;
 
         // Use atmosphere effect to give stars a fuzzy fringe
-        if (star.hasCorona() && rp.geometry == engine::GeometryHandle::Invalid)
+        if (starStyle != StarStyle::PointSpreadFunction && star.hasCorona() && rp.geometry == engine::GeometryHandle::Invalid)
         {
             Color atmColor(color.red() * 0.5f, color.green() * 0.5f, color.blue() * 0.5f);
-            atmosphere.height = radius * CoronaHeight;
+            atmosphere.height = radius * 0.2f /* CoronaHeight */;
             atmosphere.lowerColor = atmColor;
             atmosphere.upperColor = atmColor;
             atmosphere.skyColor = atmColor;
@@ -2913,6 +3164,9 @@ void Renderer::renderStar(const Star& star,
         {
             rp.atmosphere = nullptr;
         }
+#else
+        rp.atmosphere = nullptr;
+#endif
 
         rp.orientation = star.getRotationModel()->orientationAtTime(observer.getTime()).cast<float>();
 
@@ -2921,13 +3175,11 @@ void Renderer::renderStar(const Star& star,
                      rp, LightingState(), m);
     }
 
-    renderObjectAsPoint(pos,
-                        star.getRadius(),
+    renderObjectAsPoint(PointObjectInfo{pos, distance, star.getRadius()},
                         appMag,
                         discSizeInPixels,
                         color,
-                        star.hasCorona(), true,
-                        m);
+                        star.hasCorona(), true);
 }
 
 
@@ -3134,9 +3386,25 @@ void Renderer::addRenderListEntries(RenderListEntry& rle,
             rle.isOpaque = true;
         }
         rle.radius = body.getRadius();
-        if (const RingSystem* rings = bodyFeaturesManager->getRings(&body); rings != nullptr)
-            rle.radius += rings->outerRadius;
         renderList.push_back(rle);
+    }
+
+    if (const RingSystem* rings = bodyFeaturesManager->getRings(&body);
+        rings != nullptr && util::is_set(renderFlags, RenderFlags::ShowPlanetRings))
+    {
+        // When the observer is inside the rings (distance <= innerRadius) the
+        // rings are drawn inline by renderObject. Only add a separate
+        // transparent render-list entry for the outside case.
+        float ringDiscSize = (rings->outerRadius / rle.distance) / pixelSize;
+        if (ringDiscSize > 1 && rle.distance > rings->innerRadius)
+        {
+            rle.renderableType = RenderListEntry::RenderableRingSystem;
+            rle.body = &body;
+            rle.isOpaque = false;
+            rle.radius = rings->outerRadius;
+            rle.discSizeInPixels = ringDiscSize;
+            renderList.push_back(rle);
+        }
     }
 
     if (body.getClassification() == BodyClassification::Comet && util::is_set(renderFlags, RenderFlags::ShowCometTails))
@@ -3701,6 +3969,11 @@ void Renderer::renderPointStars(const StarDatabase& starDB,
     starRenderer.renderList        = &renderList;
     starRenderer.starVertexBuffer  = pointStarVertexBuffer.get();
     starRenderer.glareVertexBuffer = glareVertexBuffer.get();
+    starRenderer.psf.pointBuffer       = psfPointBuffer.get();
+    starRenderer.psf.glowBuffer        = psfGlowBuffer.get();
+    starRenderer.psf.glowLargeRenderer = m_psfGlowLargeRenderer.get();
+    starRenderer.psf.proj              = &getCurrentProjectionMatrix();
+    starRenderer.psf.modelView         = &getCurrentModelViewMatrix();
     starRenderer.cosFOV            = std::cos(math::degToRad(calcMaxFOV(fov, getAspectRatio())) / 2.0f);
 
     starRenderer.pixelSize         = pixelSize;
@@ -3708,6 +3981,12 @@ void Renderer::renderPointStars(const StarDatabase& starDB,
     starRenderer.distanceLimit     = distanceLimit;
     starRenderer.labelMode         = labelMode;
     starRenderer.SolarSystemMaxDistance = SolarSystemMaxDistance;
+    starRenderer.starStyle         = starStyle;
+    starRenderer.psf.pointRadius   = starPointRadius;
+    starRenderer.psf.pointScale    = static_cast<float>(screenDpi) / 96.0f;
+    starRenderer.psf.optimization  = starOptimization;
+    starRenderer.psf.maxIrradiance = starMaxIrradiance;
+    starRenderer.psf.exposure      = starExposure;
 
     // = 1.0 at startup
     float effDistanceToScreen = mmToInches((float) REF_DISTANCE_TO_SCREEN) * pixelSize * getScreenDpi();
@@ -3715,22 +3994,86 @@ void Renderer::renderPointStars(const StarDatabase& starDB,
 
     starRenderer.colorTemp = &starColors;
 
+    float scale = static_cast<float>(screenDpi) / 96.0f;
+
+    // Even in PSF mode, renderObjectAsPoint falls back to the legacy
+    // point-sprite buffers for close bodies whose true angular disc
+    // exceeds the PSF blob (psfDiscPx <= discSizeInPixels).  Configure
+    // their texture and point scale here so they're in a valid state
+    // before that path runs.
     m_gaussianDiscTex->bind();
     starRenderer.starVertexBuffer->setTexture(m_gaussianDiscTex.get());
-    starRenderer.starVertexBuffer->setPointScale(screenDpi / 96.0f);
+    starRenderer.starVertexBuffer->setPointScale(scale);
     starRenderer.glareVertexBuffer->setTexture(m_gaussianGlareTex.get());
-    starRenderer.glareVertexBuffer->setPointScale(screenDpi / 96.0f);
+    starRenderer.glareVertexBuffer->setPointScale(scale);
 
-    PointStarVertexBuffer::enable();
-    starRenderer.glareVertexBuffer->startSprites();
-    if (starStyle == StarStyle::PointStars)
-        starRenderer.starVertexBuffer->startBasicPoints();
-    else
-        starRenderer.starVertexBuffer->startSprites();
-
+    float iterFaintestMag = faintestMagNight;
     Renderer::PipelineState ps;
     ps.blending = true;
-    ps.blendFunc = {GL_SRC_ALPHA, GL_ONE};
+
+    if (starStyle == StarStyle::PointSpreadFunction)
+    {
+        starRenderer.psf.pointBuffer->setPointScale(scale);
+        starRenderer.psf.pointBuffer->setPointRadius(starPointRadius);
+        starRenderer.psf.pointBuffer->setOptimization(starOptimization);
+        starRenderer.psf.glowBuffer->setPointScale(scale);
+        starRenderer.psf.glowBuffer->setPointRadius(starPointRadius);
+        starRenderer.psf.glowBuffer->setOptimization(starOptimization);
+        m_psfGlowLargeRenderer->setPointScale(scale);
+        m_psfGlowLargeRenderer->setPointRadius(starPointRadius);
+        m_psfGlowLargeRenderer->setOptimization(starOptimization);
+
+        PsfStarVertexBuffer::enable();
+        starRenderer.psf.pointBuffer->start(PsfStarVertexBuffer::Mode::Point);
+        starRenderer.psf.glowBuffer->start(PsfStarVertexBuffer::Mode::Glow);
+        m_psfGlowLargeRenderer->start();
+
+        ps.blendFunc = {GL_ONE, GL_ONE};
+
+        // Precompute per-frame PSF constants once instead of recomputing
+        // them per-star inside PointStarRenderer::process.
+        //   peakRad = exposure * 3 * irradiance / (pi * r^2)
+        //   dimGate = soft-clip threshold; peakRad <= dimGate -> star culled,
+        //             dimmed = sqrt(peakRad^2 - dimGate^2) above it
+        //   a       = optimization / r  (Spencer eye-PSF coefficient)
+        //   sizePhys > maxPointSize  <=>  glowPeak > (maxPointSize*a/(2*pointScale))^2.5
+        float exposureFactor = std::max(starExposure, 1.0e-6f);
+        float rLog           = std::max(starPointRadius, 1.0e-3f);
+        float dimGate        = (celestia::gl::sRGBRendering
+                                    ? astro::LOWEST_IRRADIATION_SRGB
+                                    : astro::LOWEST_IRRADIATION)
+                               * starDimClipFactor;
+        float glowA = starOptimization / rLog;
+        float glowPeakLargeThreshold = std::pow(static_cast<float>(celestia::gl::maxPointSize)
+                                                * glowA / (2.0f * scale),
+                                                2.5f);
+
+        starRenderer.psf.peakRadScale          = exposureFactor * 3.0f
+                                                 / (celestia::numbers::pi_v<float> * rLog * rLog);
+        starRenderer.psf.dimGate               = dimGate;
+        starRenderer.psf.glowA                 = glowA;
+        starRenderer.psf.glowPeakLargeThreshold = glowPeakLargeThreshold;
+
+        // Extend the iteration cutoff to the soft-clip's natural fade-in
+        // threshold so stars actually grow through dimGate instead of
+        // popping in at whatever peakRad they happen to have just past
+        // Celestia's perceptual faintestMag cutoff.
+        //   peakRad = dimGate  =>  m = (1/0.4) * log10(exposure * 3 / (pi * r^2 * dimGate))
+        float psfFaintMag = std::log10(starRenderer.psf.peakRadScale / dimGate) / 0.4f;
+        iterFaintestMag = std::max(faintestMagNight, psfFaintMag);
+    }
+    else
+    {
+        PointStarVertexBuffer::enable();
+        starRenderer.glareVertexBuffer->startSprites();
+        if (starStyle == StarStyle::PointStars)
+            starRenderer.starVertexBuffer->startBasicPoints();
+        else
+            starRenderer.starVertexBuffer->startSprites();
+
+        ps.blendFunc = {GL_SRC_ALPHA, GL_ONE};
+    }
+
     setPipelineState(ps);
 
     starDB.findVisibleStars(starRenderer,
@@ -3738,11 +4081,21 @@ void Renderer::renderPointStars(const StarDatabase& starDB,
                             getCameraOrientationf(),
                             math::degToRad(fov),
                             getAspectRatio(),
-                            faintestMagNight);
+                            iterFaintestMag);
 
-    starRenderer.starVertexBuffer->finish();
-    starRenderer.glareVertexBuffer->finish();
-    PointStarVertexBuffer::disable();
+    if (starStyle == StarStyle::PointSpreadFunction)
+    {
+        starRenderer.psf.pointBuffer->finish();
+        starRenderer.psf.glowBuffer->finish();
+        m_psfGlowLargeRenderer->finish();
+        PsfStarVertexBuffer::disable();
+    }
+    else
+    {
+        starRenderer.starVertexBuffer->finish();
+        starRenderer.glareVertexBuffer->finish();
+        PointStarVertexBuffer::disable();
+    }
 
 #ifndef GL_ES
     if (toggleAA)
@@ -3787,7 +4140,7 @@ void Renderer::renderDeepSkyObjects(const Universe& universe,
     dsoRenderer.labelMode        = labelMode;
 
     dsoRenderer.frustum = projectionMode->getInfiniteFrustum(MinNearPlaneDistance, observer.getZoom());
-    // Use pixelSize * screenDpi instead of FoV, to eliminate windowHeight dependence.
+    // Use pixelSize * screenDpi instead of FoV, to eliminate viewportHeight dependence.
     // = 1.0 at startup
     float effDistanceToScreen = mmToInches((float) REF_DISTANCE_TO_SCREEN) * pixelSize * getScreenDpi();
 
@@ -4210,6 +4563,76 @@ StarStyle Renderer::getStarStyle() const
 }
 
 
+void Renderer::setStarPointRadius(float r)
+{
+    starPointRadius = std::clamp(r, 1.0f, 10.0f);
+    markSettingsChanged();
+}
+
+
+float Renderer::getStarPointRadius() const
+{
+    return starPointRadius;
+}
+
+
+void Renderer::setStarOptimization(float opt)
+{
+    starOptimization = std::clamp(opt, 0.0f, 10.0f);
+    markSettingsChanged();
+}
+
+
+float Renderer::getStarOptimization() const
+{
+    return starOptimization;
+}
+
+
+void Renderer::setStarMaxIrradiance(float v)
+{
+    if (v <= 0.0f)
+        starMaxIrradiance = 0.0f;
+    else
+        starMaxIrradiance = std::clamp(v, 1.0f, 1.0e6f);
+    markSettingsChanged();
+}
+
+
+float Renderer::getStarMaxIrradiance() const
+{
+    return starMaxIrradiance;
+}
+
+
+void Renderer::setStarDimClipFactor(float v)
+{
+    // 1 == no clip (gate ≈ the perceptual visibility floor), larger values
+    // soft-clip a wider band of dim stars to reclaim per-frame cost.
+    starDimClipFactor = std::clamp(v, 1.0f, 100.0f);
+    markSettingsChanged();
+}
+
+
+float Renderer::getStarDimClipFactor() const
+{
+    return starDimClipFactor;
+}
+
+
+void Renderer::setStarExposure(float e)
+{
+    starExposure = std::clamp(e, 1.0e-3f, 1.0e6f);
+    markSettingsChanged();
+}
+
+
+float Renderer::getStarExposure() const
+{
+    return starExposure;
+}
+
+
 void Renderer::loadTextures(Body* body)
 {
     const Surface& surface = body->getSurface();
@@ -4218,17 +4641,17 @@ void Renderer::loadTextures(Body* body)
     {
         m_textureManager->find(surface.baseTexture);
     }
-    if ((surface.appearanceFlags & Surface::ApplyBumpMap) != 0 &&
+    if (util::is_set(surface.appearanceFlags, Surface::Flags::ApplyBumpMap) &&
         surface.bumpTexture != util::TextureHandle::Invalid)
     {
         m_textureManager->find(surface.bumpTexture);
     }
-    if ((surface.appearanceFlags & Surface::ApplyNightMap) != 0 &&
+    if (util::is_set(surface.appearanceFlags, Surface::Flags::ApplyNightMap) &&
         util::is_set(renderFlags, RenderFlags::ShowNightMaps))
     {
         m_textureManager->find(surface.nightTexture);
     }
-    if ((surface.appearanceFlags & Surface::SeparateSpecularMap) != 0 &&
+    if (util::is_set(surface.appearanceFlags, Surface::Flags::SeparateSpecularMap) &&
         surface.specularTexture != util::TextureHandle::Invalid)
     {
         m_textureManager->find(surface.specularTexture);
@@ -4577,7 +5000,7 @@ void Renderer::setRenderRegion(int x, int y, int width, int height, bool withSci
 
 float Renderer::getAspectRatio() const
 {
-    return static_cast<float>(windowWidth) / static_cast<float>(windowHeight);
+    return static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
 }
 
 bool Renderer::getInfo(map<string, string>& info) const
@@ -4609,11 +5032,32 @@ bool Renderer::getInfo(map<string, string>& info) const
     GLint blueBits = 0;
     GLint alphaBits = 0;
     GLint depthBits = 0;
+#ifdef GL_ES
+    // GLES 3.0 still supports GL_*_BITS queries.
     glGetIntegerv(GL_RED_BITS, &redBits);
     glGetIntegerv(GL_GREEN_BITS, &greenBits);
     glGetIntegerv(GL_BLUE_BITS, &blueBits);
     glGetIntegerv(GL_ALPHA_BITS, &alphaBits);
     glGetIntegerv(GL_DEPTH_BITS, &depthBits);
+#else
+    // GL 3.2 Core removed GL_*_BITS; query the bound draw framebuffer's
+    // attachments. The attachment names differ for the default FB vs a user
+    // FBO (Qt's QOpenGLWidget renders into its own FBO).
+    GLint drawFbo = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
+    const GLenum colorAttach = (drawFbo == 0) ? GL_BACK_LEFT : GL_COLOR_ATTACHMENT0;
+    const GLenum depthAttach = (drawFbo == 0) ? GL_DEPTH     : GL_DEPTH_ATTACHMENT;
+    glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, colorAttach,
+                                          GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE, &redBits);
+    glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, colorAttach,
+                                          GL_FRAMEBUFFER_ATTACHMENT_GREEN_SIZE, &greenBits);
+    glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, colorAttach,
+                                          GL_FRAMEBUFFER_ATTACHMENT_BLUE_SIZE, &blueBits);
+    glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, colorAttach,
+                                          GL_FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE, &alphaBits);
+    glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, depthAttach,
+                                          GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &depthBits);
+#endif
 
     if (alphaBits == 0)
         info["ColorComponent"] = fmt::format("RGB{}{}{}", redBits, greenBits, blueBits);
@@ -4630,14 +5074,16 @@ bool Renderer::getInfo(map<string, string>& info) const
     glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &maxTextureUnits);
     info["MaxTextureUnits"] = to_string(maxTextureUnits);
 
-    GLint pointSizeRange[2];
-    GLfloat lineWidthRange[2];
+    // GL 3.2 Core removed antialiased point/line queries; GL_POINT_SIZE_RANGE /
+    // GL_LINE_WIDTH_RANGE are core. GLES 3.0 only exposes the ALIASED variants.
+    std::array<GLint, 2> pointSizeRange = { 0, 0 };
+    std::array<GLfloat, 2> lineWidthRange = { 0.0f, 0.0f };
 #ifdef GL_ES
-    glGetIntegerv(GL_ALIASED_POINT_SIZE_RANGE, pointSizeRange);
-    glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, lineWidthRange);
+    glGetIntegerv(GL_ALIASED_POINT_SIZE_RANGE, pointSizeRange.data());
+    glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, lineWidthRange.data());
 #else
-    glGetIntegerv(GL_SMOOTH_POINT_SIZE_RANGE, pointSizeRange);
-    glGetFloatv(GL_SMOOTH_LINE_WIDTH_RANGE, lineWidthRange);
+    glGetIntegerv(GL_POINT_SIZE_RANGE, pointSizeRange.data());
+    glGetFloatv(GL_LINE_WIDTH_RANGE, lineWidthRange.data());
 #endif
     info["PointSizeMin"] = to_string(pointSizeRange[0]);
     info["PointSizeMax"] = to_string(pointSizeRange[1]);
@@ -4645,12 +5091,11 @@ bool Renderer::getInfo(map<string, string>& info) const
     info["LineWidthMax"] = to_string(lineWidthRange[1]);
 
 #ifndef GL_ES
-    GLfloat pointSizeGran = 0;
-    glGetFloatv(GL_SMOOTH_POINT_SIZE_GRANULARITY, &pointSizeGran);
-    info["PointSizeGran"] = fmt::format("{:.2f}", pointSizeGran);
-
+    // GL_MAX_VARYING_FLOATS / GL_MAX_VARYING_COMPONENTS are unreliable on
+    // some Core drivers (Apple's GL 4.1 Metal returns 0); use the per-stage
+    // vertex output limit which is the canonical 3.2+ Core query.
     GLint maxVaryings = 0;
-    glGetIntegerv(GL_MAX_VARYING_FLOATS, &maxVaryings);
+    glGetIntegerv(GL_MAX_VERTEX_OUTPUT_COMPONENTS, &maxVaryings);
     info["MaxVaryingFloats"] = to_string(maxVaryings);
 #endif
 
@@ -4667,9 +5112,23 @@ bool Renderer::getInfo(map<string, string>& info) const
     info["MaxCubeMapSize"] = to_string(maxCubeMapSize);
 #endif
 
-    s = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
-    if (s != nullptr)
-        info["Extensions"] = s;
+    // GL 3.2 Core / GLES 3.0: glGetString(GL_EXTENSIONS) is removed; iterate
+    // GL_NUM_EXTENSIONS + glGetStringi.
+    GLint numExtensions = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &numExtensions);
+    std::string extensions;
+    extensions.reserve(static_cast<std::size_t>(numExtensions) * 32);
+    for (GLint i = 0; i < numExtensions; ++i)
+    {
+        const char* ext = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)));
+        if (ext == nullptr)
+            continue;
+        if (!extensions.empty())
+            extensions.push_back(' ');
+        extensions.append(ext);
+    }
+    if (!extensions.empty())
+        info["Extensions"] = std::move(extensions);
 
     return true;
 }
@@ -4685,7 +5144,7 @@ Renderer::createShadowFBO()
 {
     m_shadowFBO = std::make_unique<FramebufferObject>(m_shadowMapSize,
                                                       m_shadowMapSize,
-                                                      FramebufferObject::DepthAttachment);
+                                                      FramebufferObject::Attachment::Depth);
     if (!m_shadowFBO->isValid())
     {
         GetLogger()->warn("Error creating shadow FBO.\n");
@@ -4723,11 +5182,12 @@ Renderer::removeInvisibleItems(const math::InfiniteFrustum &frustum)
         {
         case RenderListEntry::RenderableStar:
             radius = ri.star->getRadius();
-            cullRadius = radius * (1.0f + CoronaHeight);
+            cullRadius = radius;
             break;
 
         case RenderListEntry::RenderableCometTail:
         case RenderListEntry::RenderableReferenceMark:
+        case RenderListEntry::RenderableRingSystem:
             radius = ri.radius;
             cullRadius = radius;
             convex = false;
@@ -4735,13 +5195,18 @@ Renderer::removeInvisibleItems(const math::InfiniteFrustum &frustum)
 
         case RenderListEntry::RenderableBody:
             radius = ri.body->getBoundingRadius();
-            if (const RingSystem* rings = bodyFeaturesManager->getRings(ri.body); rings != nullptr)
+
+            if (const RingSystem* rings = bodyFeaturesManager->getRings(ri.body);
+                rings != nullptr && util::is_set(renderFlags, RenderFlags::ShowPlanetRings) &&
+                ri.distance <= rings->innerRadius)
             {
+                // Inside the rings: they are drawn inline with the body (no
+                // separate ring entry), so the body entry must encompass the
+                // ring extent for culling and depth partitioning.
                 radius = rings->outerRadius;
                 convex = false;
             }
-
-            if (!ri.body->isEllipsoid())
+            else if (!ri.body->isEllipsoid())
                 convex = false;
 
             cullRadius = radius;
@@ -4761,52 +5226,72 @@ Renderer::removeInvisibleItems(const math::InfiniteFrustum &frustum)
         // Test the object's bounding sphere against the view frustum
         if (frustum.testSphere(center, cullRadius) != math::FrustumAspect::Outside)
         {
-            float nearZ = center.norm() - radius;
-            float maxSpan = hypot((float) windowWidth, (float) windowHeight);
-            float nearZcoeff = cos(math::degToRad(fov / 2.0f)) * ((float) windowHeight / maxSpan);
-            nearZ = -nearZ * nearZcoeff;
-
-            if (nearZ > -MinNearPlaneDistance)
-                ri.nearZ = -max(MinNearPlaneDistance, radius / 2000.0f);
-            else
-                ri.nearZ = nearZ;
-
-            if (!convex)
+            if (ri.discSizeInPixels <= 1.0f)
             {
-                ri.farZ = center.z() - radius;
-                if (ri.farZ / ri.nearZ > MaxFarNearRatio * 0.5f)
-                    ri.nearZ = ri.farZ / (MaxFarNearRatio * 0.5f);
+                // Sub-pixel objects are rendered as points in front of
+                // the body. Set farZ = nearZ so depth partitioning assigns
+                // them to the interval that contains the render position.
+                ri.nearZ = center.z() + radius;
+                ri.farZ  = ri.nearZ;
             }
             else
             {
-                // Make the far plane as close as possible
                 float d = center.norm();
+                float nearZ = d - radius;
+                float maxSpan = std::hypot(static_cast<float>(viewportWidth), static_cast<float>(viewportHeight));
+                float nearZcoeff = std::cos(math::degToRad(fov / 2.0f)) * (static_cast<float>(viewportHeight) / maxSpan);
+                nearZ = -nearZ * nearZcoeff;
 
-                // Account for ellipsoidal objects
-                float eradius = radius;
-                if (ri.renderableType == RenderListEntry::RenderableBody)
+                // Floor the near plane: tight 2-ULP for convex bodies, looser
+                // radius/2000 for non-convex ones whose bounding sphere is
+                // conservative and may approach the camera even when the
+                // geometry doesn't.
+                float bodyMinNearZ;
+                if (convex)
                 {
-                    float minSemiAxis = ri.body->getSemiAxes().minCoeff();
-                    eradius *= minSemiAxis / radius;
-                }
-
-                if (d > eradius)
-                {
-                    ri.farZ = ri.centerZ - ri.radius;
+                    float ulp = std::nextafter(radius, radius * 2.0f) - radius;
+                    bodyMinNearZ = std::max(MinNearPlaneDistance, ulp * 2.0f);
                 }
                 else
                 {
-                    // We're inside the bounding sphere (and, if the planet
-                    // is spherical, inside the planet.)
-                    ri.farZ = ri.nearZ * 2.0f;
+                    bodyMinNearZ = std::max(MinNearPlaneDistance, radius / 2000.0f);
                 }
+                ri.nearZ = std::min(nearZ, -bodyMinNearZ);
 
-                if (cloudHeight > 0.0f)
+                if (!convex)
                 {
-                    // If there's a cloud layer, we need to move the
-                    // far plane out so that the clouds aren't clipped
-                    float cloudLayerRadius = eradius + cloudHeight;
-                    ri.farZ -= sqrt(math::square(cloudLayerRadius) - math::square(eradius));
+                    ri.farZ = center.z() - radius;
+                    if (ri.farZ / ri.nearZ > MaxFarNearRatio * 0.5f)
+                        ri.nearZ = ri.farZ / (MaxFarNearRatio * 0.5f);
+                }
+                else
+                {
+                    // Account for ellipsoidal objects
+                    float eradius = radius;
+                    if (ri.renderableType == RenderListEntry::RenderableBody)
+                    {
+                        float minSemiAxis = ri.body->getSemiAxes().minCoeff();
+                        eradius *= minSemiAxis / radius;
+                    }
+
+                    // With an atmosphere, the shell wraps the camera and extends
+                    // far past the planet horizon; use the back of the cloud-
+                    // extended bounding sphere. Without one, the horizon tangent
+                    // is tight and continuous in d.
+                    if (cloudHeight > 0.0f)
+                    {
+                        float cloudLayerRadius = eradius + cloudHeight;
+                        ri.farZ = center.z() - cloudLayerRadius
+                                             - std::sqrt(math::square(cloudLayerRadius)
+                                             - math::square(eradius));
+                    }
+                    else
+                    {
+                        float horizon = d > eradius
+                                          ? std::sqrt(math::square(d) - math::square(eradius)) * 1.1f
+                                          : MinNearPlaneDistance;
+                        ri.farZ = -horizon;
+                    }
                 }
             }
 
@@ -5016,7 +5501,7 @@ Renderer::buildDepthPartitions()
     for (i = nEntries - 1; i >= 0; i--)
     {
         // Only consider renderables that will occupy more than one pixel.
-        if (renderList[i].discSizeInPixels > 1)
+        if (renderList[i].discSizeInPixels > 1.0f)
         {
             if (nIntervals == 0 ||
                 renderList[i].farZ >= depthPartitions[nIntervals - 1].nearZ)
@@ -5070,14 +5555,15 @@ Renderer::buildDepthPartitions()
     }
 
     // Adjust the nearest interval to include the closest marker (if it's
-    // closer to the observer than anything else
+    // closer to the observer than anything else).
     if (!depthSortedAnnotations.empty())
     {
-        // Factor of 0.999 makes sure ensures that the near plane does not fall
+        // Factor of 0.999 ensures that the near plane does not fall
         // exactly at the marker's z coordinate (in which case the marker
         // would be susceptible to getting clipped.)
-        if (-depthSortedAnnotations[0].position.z() > zNearest)
-            zNearest = -depthSortedAnnotations[0].position.z() * 0.999f;
+        float closestZ = depthSortedAnnotations.back().position.z();
+        if (-closestZ > zNearest)
+            zNearest = -closestZ * 0.999f;
     }
 
 #if DEBUG_COALESCE
@@ -5141,6 +5627,8 @@ Renderer::renderSolarSystemObjects(const Observer &observer,
     auto annotation = depthSortedAnnotations.begin();
     float intervalSize = 1.0f / static_cast<float>(max(1, nIntervals));
     int i = static_cast<int>(renderList.size()) - 1;
+    m_legacyLargeStarRenderer->start();
+    m_legacyLargeGlareRenderer->start();
     for (int interval = 0; interval < nIntervals; interval++)
     {
         currentIntervalIndex = interval;
@@ -5232,6 +5720,34 @@ Renderer::renderSolarSystemObjects(const Observer &observer,
         pointStarVertexBuffer->finish();
         PointStarVertexBuffer::disable();
 
+        m_legacyLargeStarRenderer->render();
+        m_legacyLargeGlareRenderer->render();
+
+        // Drain any close-star PSF point-sprites added by
+        // Drain any close-star PSF point-sprites added by
+        // renderObjectAsPoint during renderItem above.  Uses the current
+        // per-interval (km-scale) projection so Sol-at-1AU stays inside
+        // the depth range.  The buffers were started+finished once in
+        // renderPointStars (m_prog persists), so render() can pick up the
+        // current MVP via makeCurrent() without re-calling start().
+        if (starStyle == StarStyle::PointSpreadFunction)
+        {
+            Renderer::PipelineState psPsf;
+            psPsf.blending  = true;
+            psPsf.blendFunc = {GL_ONE, GL_ONE};
+            psPsf.depthTest = true;
+            setPipelineState(psPsf);
+
+            PsfStarVertexBuffer::enable();
+            psfPointBuffer->render();
+            psfGlowBuffer->render();
+            m_psfGlowLargeRenderer->render();
+            psfPointBuffer->finish();
+            psfGlowBuffer->finish();
+            m_psfGlowLargeRenderer->finish();
+            PsfStarVertexBuffer::disable();
+        }
+
         // Render annotations in this interval
         annotation = renderSortedAnnotations(annotation,
                                              nearPlaneDistance,
@@ -5239,6 +5755,9 @@ Renderer::renderSolarSystemObjects(const Observer &observer,
                                              FontStyle::Normal);
         endObjectAnnotations();
     }
+
+    m_legacyLargeStarRenderer->finish();
+    m_legacyLargeGlareRenderer->finish();
 
     // reset the depth range
     glDepthRange(0, 1);
@@ -5276,12 +5795,9 @@ Renderer::setPipelineState(const Renderer::PipelineState &ps) noexcept
     }
     if (ps.smoothLines != m_pipelineState.smoothLines)
     {
-#ifndef GL_ES
-        if (ps.smoothLines && util::is_set(renderFlags, RenderFlags::ShowSmoothLines))
-            glEnable(GL_LINE_SMOOTH);
-        else
-            glDisable(GL_LINE_SMOOTH);
-#endif
+        // GL_LINE_SMOOTH was removed in GL 3.2 Core Profile and is unsupported
+        // on GLES. Shader-based line AA in LineRenderer handles antialiasing
+        // for thick lines; we just track the flag for downstream code.
         m_pipelineState.smoothLines = ps.smoothLines;
     }
 }

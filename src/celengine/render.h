@@ -43,6 +43,7 @@ class ReferenceMark;
 class CurvePlot;
 class CurvePlotVertexBuffer;
 class PointStarVertexBuffer;
+namespace celestia::render { class PsfStarVertexBuffer; class StarPipelineOwner; }
 class Observer;
 struct Surface;
 class Texture;
@@ -182,8 +183,6 @@ class Renderer
     void setScreenDpi(int);
     float getTextScaleFactor() const;
     void setTextScaleFactor(float);
-    int getWindowWidth() const;
-    int getWindowHeight() const;
 
     float getScaleFactor() const;
     float getPointWidth() const;
@@ -275,8 +274,29 @@ class Renderer
 
     void buildProjectionMatrix(Eigen::Matrix4f &mat, float nearZ, float farZ, float zoom) const;
 
+    // Shared interlock so any star-pipeline buffer that wants to bind
+    // its program can first flush whichever buffer (of any class) was
+    // last to bind.  Returned via const accessor because the owner is
+    // transient draw-time state.
+    celestia::render::StarPipelineOwner& starPipelineOwner() const
+    {
+        return *m_starPipelineOwner;
+    }
+
     void setStarStyle(StarStyle);
     StarStyle getStarStyle() const;
+
+    // Point Spread Function star renderer settings (StarStyle::PointSpreadFunction).
+    void  setStarPointRadius(float r);
+    float getStarPointRadius() const;
+    void  setStarOptimization(float opt);
+    float getStarOptimization() const;
+    void  setStarMaxIrradiance(float v);
+    float getStarMaxIrradiance() const;
+    void  setStarDimClipFactor(float v);
+    float getStarDimClipFactor() const;
+    void  setStarExposure(float e);
+    float getStarExposure() const;
     void setResolution(celestia::engine::TextureResolution resolution);
     celestia::engine::TextureResolution getResolution() const;
     void enableSelectionPointer();
@@ -396,12 +416,14 @@ class Renderer
         Surface* surface{ nullptr };
         const Atmosphere* atmosphere{ nullptr };
         RingSystem* rings{ nullptr };
+        LightingState::EclipseShadowVector* eclipseShadows{ nullptr };
+
+        Eigen::Quaternionf orientation{ Eigen::Quaternionf::Identity() };
+        Eigen::Vector3f semiAxes{ Eigen::Vector3f::Ones() };
         float radius{ 1.0f };
         float geometryScale{ 1.0f };
-        Eigen::Vector3f semiAxes{ Eigen::Vector3f::Ones() };
         celestia::engine::GeometryHandle geometry{ celestia::engine::GeometryHandle::Invalid };
-        Eigen::Quaternionf orientation{ Eigen::Quaternionf::Identity() };
-        LightingState::EclipseShadowVector* eclipseShadows;
+	bool isStar{ false };
     };
 
     struct DepthBufferPartition
@@ -478,6 +500,13 @@ class Renderer
                       float, float,
                       const Matrices&);
 
+    void renderRingSystem(Body& body,
+                          const Eigen::Vector3f& pos,
+                          float distance,
+                          const Observer& observer,
+                          float nearPlaneDistance,
+                          const Matrices&);
+
     void renderStar(const Star& star,
                     const Eigen::Vector3f& pos,
                     float distance,
@@ -507,14 +536,34 @@ class Renderer
                             float &glareSize,
                             float &glareAlpha) const;
 
-    void renderObjectAsPoint(const Eigen::Vector3f& center,
-                             float radius,
+    // Geometric description of a renderable point-like body shared by
+    // renderObjectAsPoint / addStarAsPsfPoint, so we can thread the
+    // precomputed camera distance without exceeding parameter limits.
+    struct PointObjectInfo
+    {
+        Eigen::Vector3f position;
+        float           distance;
+        float           radius;
+    };
+
+    void renderObjectAsPoint(const PointObjectInfo& info,
                              float appMag,
                              float discSizeInPixels,
                              const Color& color,
                              bool useHalos,
-                             bool emissive,
-                             const Matrices&);
+                             bool emissive);
+
+    // PSF-mode point-sprite for a close star.  Called from
+    // renderObjectAsPoint when the PSF blob still dominates the star's
+    // true angular disc.  Adds to psfPointBuffer / psfGlowBuffer (drained
+    // per-interval inside renderSolarSystemObjects), or falls back to the
+    // m_psfGlowLargeRenderer billboard path for oversize glows.
+    void addStarAsPsfPoint(const PointObjectInfo &info,
+                           const Color           &color,
+                           float                  appMag,
+                           float                  pointScale,
+                           float                  discSizeInPixels,
+                           bool                   emissive);
 
     void locationsToAnnotations(const Body& body,
                                 const Eigen::Vector3d& bodyPosition,
@@ -602,8 +651,8 @@ class Renderer
  private:
     std::unique_ptr<ShaderManager> shaderManager{ std::make_unique<ShaderManager>() };
 
-    int windowWidth{ 0 };
-    int windowHeight{ 0 };
+    int viewportWidth{ 0 };
+    int viewportHeight{ 0 };
     float fov{ celestia::engine::standardFOV };
     double cosViewConeAngle{ 0.0 };
     int screenDpi{ 96 };
@@ -631,6 +680,11 @@ class Renderer
     float saturationMagNight{ 1.0f };
     float saturationMag{ 1.0f };
     StarStyle starStyle{ StarStyle::FuzzyPointStars };
+    float starPointRadius{ 1.5f };
+    float starOptimization{ 0.1f };
+    float starMaxIrradiance{ 100.0f };
+    float starDimClipFactor{ 10.0f };
+    float starExposure{ 10.0f };
 
     Color ambientColor;
     std::string displayedSurface;
@@ -639,6 +693,9 @@ class Renderer
     Eigen::Matrix3d m_cameraTransform{ Eigen::Matrix3d::Identity() };
     std::unique_ptr<PointStarVertexBuffer> pointStarVertexBuffer;
     std::unique_ptr<PointStarVertexBuffer> glareVertexBuffer;
+    std::unique_ptr<celestia::render::PsfStarVertexBuffer>   psfPointBuffer;
+    std::unique_ptr<celestia::render::PsfStarVertexBuffer>   psfGlowBuffer;
+    std::unique_ptr<celestia::render::StarPipelineOwner>     m_starPipelineOwner;
     std::vector<RenderListEntry> renderList;
     std::vector<SecondaryIlluminator> secondaryIlluminators;
     std::vector<DepthBufferPartition> depthPartitions;
@@ -726,7 +783,9 @@ class Renderer
     std::unique_ptr<celestia::render::EclipticLineRenderer> m_eclipticLineRenderer;
     std::unique_ptr<celestia::render::GalaxyRenderer> m_galaxyRenderer;
     std::unique_ptr<celestia::render::GlobularRenderer> m_globularRenderer;
-    std::unique_ptr<celestia::render::LargeStarRenderer> m_largeStarRenderer;
+    std::unique_ptr<celestia::render::LegacyLargeStarRenderer> m_legacyLargeStarRenderer;
+    std::unique_ptr<celestia::render::LegacyLargeStarRenderer> m_legacyLargeGlareRenderer;
+    std::unique_ptr<celestia::render::PsfGlowLargeRenderer> m_psfGlowLargeRenderer;
     std::unique_ptr<celestia::render::LineRenderer> m_hollowMarkerRenderer;
     std::unique_ptr<celestia::render::NebulaRenderer> m_nebulaRenderer;
     std::unique_ptr<celestia::render::OpenClusterRenderer> m_openClusterRenderer;

@@ -343,7 +343,7 @@ public:
 class IAUNeptuneRotationModel : public IAURotationModel
 {
 public:
-    IAUNeptuneRotationModel() : IAURotationModel(360.0 / 536.3128492) {}
+    IAUNeptuneRotationModel() : IAURotationModel(360.0 / 541.1397757) {}
 
     void pole(double d, double& ra, double &dec) const override
     {
@@ -357,14 +357,14 @@ public:
     {
         double T = d / 36525.0;
         double N = math::degToRad(357.85 + 52.316 * T);
-        return 253.18 + 536.3128492 * d - 0.48 * sin(N);
+        return 249.978 + 541.1397757 * d - 0.48 * sin(N);
     }
 };
 
 
 /*! IAU rotation model for the Moon.
  *  From the 2009 report of the IAU Working Group on Cartographic Coordinates and Rotational Elements:
- *  https://astropedia.astrogeology.usgs.gov/alfresco/d/d/workspace/SpacesStore/28fd9e81-1964-44d6-a58b-fbbf61e64e15/WGCCRE2009reprint.pdf
+ *  https://link.springer.com/article/10.1007/s10569-010-9320-4
  */
 class IAULunarRotationModel : public IAURotationModel
 {
@@ -451,7 +451,8 @@ public:
 
 // Rotations of Martian, Jovian, Saturnian, and Uranian satellites from IAU Working Group
 // on Cartographic Coordinates and Rotational Elements (2015 report)
-// See: https://astropedia.astrogeology.usgs.gov/download/Docs/WGCCRE/WGCCRE2015reprint.pdf
+// See: https://www.iau.org/WG100/WG100/Home.aspx
+//      https://www.usgs.gov/centers/astrogeology-science-center/science/iau-wgccre
 
 class IAUPhobosRotationModel : public IAURotationModel
 {
@@ -874,6 +875,40 @@ public:
     }
 };
 
+
+class IAUTritonRotationModel : public IAURotationModel
+{
+public:
+    IAUTritonRotationModel() : IAURotationModel(360.0 / 61.2572637) { setFlipped(true); }
+
+    void pole(double t, double& ra, double& dec) const override
+    {
+        double T = t / 36525.0;
+        double N7 = math::degToRad(177.85 + 52.316 * T);
+        ra = 299.36 - 32.35 * std::sin(N7) - 6.28 * std::sin(2 * N7)
+            - 2.08 * std::sin(3 * N7) - 0.74 * std::sin(4 * N7)
+            - 0.28 * std::sin(5 * N7) - 0.11 * std::sin(6 * N7)
+            - 0.07 * std::sin(7 * N7) - 0.02 * std::sin(8 * N7)
+            - 0.01 * std::sin(9 * N7);
+        dec = 41.17 + 22.55 * std::cos(N7) + 2.10 * std::cos(2 * N7)
+            + 0.55 * std::cos(3 * N7) + 0.16 * std::cos(4 * N7)
+            + 0.05 * std::cos(5 * N7) + 0.02 * std::cos(6 * N7)
+            + 0.01 * std::cos(7 * N7);
+    }
+
+    double meridian(double t) const override
+    {
+        double T = t / 36525.0;
+        double N7 = math::degToRad(177.85 + 52.316 * T);
+        return (296.53 - 61.2572637 * t
+                + 22.25 * std::sin(N7) + 6.73 * std::sin(2 * N7)
+                + 2.05 * std::sin(3 * N7) + 0.74 * std::sin(4 * N7)
+                + 0.28 * std::sin(5 * N7) + 0.11 * std::sin(6 * N7)
+                + 0.05 * std::sin(7 * N7) + 0.02 * std::sin(8 * N7)
+                + 0.01 * std::sin(9 * N7));
+    }
+};
+
 enum class CustomRotationModelType
 {
     EarthP03lp = 0,
@@ -916,6 +951,7 @@ enum class CustomRotationModelType
     IAUUmbriel,
     IAUTitania,
     IAUOberon,
+    IAUTriton,
     _Count,
 };
 
@@ -1083,6 +1119,10 @@ CustomRotationsManager::createModel(CustomRotationModelType type)
         return std::make_shared<IAUTitaniaRotationModel>();
     case CustomRotationModelType::IAUOberon:
         return std::make_shared<IAUOberonRotationModel>();
+
+    // IAU rotation elements for satellites of Neptune
+    case CustomRotationModelType::IAUTriton:
+        return std::make_shared<IAUTritonRotationModel>();
     default:
         return nullptr;
     }

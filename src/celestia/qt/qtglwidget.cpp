@@ -61,12 +61,8 @@ constexpr auto DEFAULT_TEXTURE_RESOLUTION = static_cast<int>(engine::TextureReso
 std::pair<float, float>
 mousePosition(const QMouseEvent& m, qreal scale)
 {
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    return { static_cast<float>(m.x() * scale), static_cast<float>(m.y() * scale) };
-#else
     auto position = m.position();
     return { static_cast<float>(position.x() * scale), static_cast<float>(position.y() * scale) };
-#endif
 }
 
 } // end unnamed namespace
@@ -113,16 +109,16 @@ CelestiaGlWidget::initializeGL()
     using namespace celestia;
 #ifdef GL_ES
     if (!gl::init(appCore->getConfig()->renderDetails.ignoreGLExtensions) ||
-        !gl::checkVersion(gl::GLES_2))
+        !gl::checkVersion(gl::GLES_3_0))
     {
-        QMessageBox::critical(nullptr, "Celestia", _("Celestia was unable to initialize OpenGLES 2.0."));
+        QMessageBox::critical(nullptr, "Celestia", _("Celestia was unable to initialize OpenGL ES 3.0."));
         std::exit(1);
     }
 #else
     if (!gl::init(appCore->getConfig()->renderDetails.ignoreGLExtensions) ||
-        !gl::checkVersion(gl::GL_2_1))
+        !gl::checkVersion(gl::GL_3_3))
     {
-        QMessageBox::critical(nullptr, "Celestia", _("Celestia was unable to initialize OpenGL 2.1."));
+        QMessageBox::critical(nullptr, "Celestia", _("Celestia was unable to initialize OpenGL 3.3."));
         std::exit(1);
     }
 #endif
@@ -168,6 +164,21 @@ CelestiaGlWidget::initializeGL()
 
     appRenderer->setSolarSystemMaxDistance(appCore->getConfig()->renderDetails.SolarSystemMaxDistance);
     appRenderer->setShadowMapSize(appCore->getConfig()->renderDetails.ShadowMapSize);
+    appRenderer->setStarPointRadius(
+        (float) settings.value("StarPointRadius",
+                               appCore->getConfig()->renderDetails.stars.pointRadius).toDouble());
+    appRenderer->setStarOptimization(
+        (float) settings.value("StarOptimization",
+                               appCore->getConfig()->renderDetails.stars.optimization).toDouble());
+    appRenderer->setStarMaxIrradiance(
+        (float) settings.value("StarMaxIrradiance",
+                               appCore->getConfig()->renderDetails.stars.maxIrradiance).toDouble());
+    appRenderer->setStarDimClipFactor(
+        (float) settings.value("StarDimClipFactor",
+                               appCore->getConfig()->renderDetails.stars.dimClipFactor).toDouble());
+    appRenderer->setStarExposure(
+        (float) settings.value("StarExposure",
+                               appCore->getConfig()->renderDetails.stars.exposure).toDouble());
 }
 
 void

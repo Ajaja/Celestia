@@ -37,6 +37,9 @@ enum class StaticShader
     Globular,
     LargeStar,
     Passthrough,
+    PsfStarGlow,
+    PsfStarGlowLarge,
+    PsfStarPoint,
     sRGB,
     SelPointer,
     Star,
@@ -84,6 +87,7 @@ enum class LightingModel : std::uint16_t
     EmissiveModel         = 0x0100,
     ParticleModel         = 0x0200,
     UnlitModel            = 0x0400,
+    StarModel             = 0x0800,
 };
 
 ENUM_CLASS_BITWISE_OPS(LightingModel);
@@ -354,14 +358,12 @@ public:
     ~ShaderManager() = default;
 
     CelestiaGLProgram* getShader(const ShaderProperties&);
-    CelestiaGLProgram* getShader(StaticShader);
-    CelestiaGLProgram* getShaderGL3(StaticShader, const GeomShaderParams* = nullptr);
+    CelestiaGLProgram* getShader(StaticShader, const GeomShaderParams* = nullptr);
 
     void setFisheyeEnabled(bool enabled);
 
 private:
-    std::shared_ptr<CelestiaGLProgram> loadShader(StaticShader);
-    std::shared_ptr<CelestiaGLProgram> loadShaderGL3(StaticShader, const GeomShaderParams*);
+    std::shared_ptr<CelestiaGLProgram> loadShader(StaticShader, const GeomShaderParams*);
     std::shared_ptr<CelestiaGLProgram> getErrorProgram();
 
     std::unordered_map<ShaderProperties, std::shared_ptr<CelestiaGLProgram>> m_dynamicShaders;

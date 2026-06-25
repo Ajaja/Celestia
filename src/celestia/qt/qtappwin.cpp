@@ -306,8 +306,8 @@ CelestiaAppWindow::init(const CelestiaCommandLineOptions& options)
     setWindowIcon(QIcon(":/icons/celestia.png"));
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0) && QT_VERSION < QT_VERSION_CHECK(7, 0, 0)
     QGuiApplication::setDesktopFileName("celestia-qt6");
-#elif QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-    QGuiApplication::setDesktopFileName("celestia-qt5");
+#else
+    #error "Qt version is not supported"
 #endif
 
     if (!options.logFilename.isEmpty())
@@ -333,8 +333,11 @@ CelestiaAppWindow::init(const CelestiaCommandLineOptions& options)
     QSurfaceFormat glformat = QSurfaceFormat::defaultFormat();
 #ifdef GL_ES
     glformat.setRenderableType(QSurfaceFormat::RenderableType::OpenGLES);
+    glformat.setVersion(3, 0);
 #else
     glformat.setRenderableType(QSurfaceFormat::RenderableType::OpenGL);
+    glformat.setVersion(3, 3);
+    glformat.setProfile(QSurfaceFormat::CoreProfile);
 #endif
     glformat.setAlphaBufferSize(0);
     if (m_appCore->getConfig()->renderDetails.aaSamples > 1)
@@ -596,6 +599,11 @@ CelestiaAppWindow::writeSettings()
     settings.setValue("AmbientLightLevel", renderer->getAmbientLightLevel());
     settings.setValue("TintSaturation", renderer->getTintSaturation());
     settings.setValue("StarStyle", static_cast<int>(renderer->getStarStyle()));
+    settings.setValue("StarPointRadius", renderer->getStarPointRadius());
+    settings.setValue("StarOptimization", renderer->getStarOptimization());
+    settings.setValue("StarMaxIrradiance", renderer->getStarMaxIrradiance());
+    settings.setValue("StarDimClipFactor", renderer->getStarDimClipFactor());
+    settings.setValue("StarExposure", renderer->getStarExposure());
     settings.setValue("TextureResolution", static_cast<unsigned int>(renderer->getResolution()));
     settings.setValue("StarsColor", static_cast<int>(renderer->getStarColorTable()));
 
@@ -1486,6 +1494,7 @@ CelestiaAppWindow::createMenus()
     starStyleMenu->addAction(actions->pointStarAction);
     starStyleMenu->addAction(actions->fuzzyPointStarAction);
     starStyleMenu->addAction(actions->scaledDiscStarAction);
+    starStyleMenu->addAction(actions->psfStarAction);
 
     displayMenu->addSeparator();
 

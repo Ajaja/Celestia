@@ -88,6 +88,9 @@ set(CELENGINE_SOURCES
   pointstarrenderer.h
   pointstarvertexbuffer.cpp
   pointstarvertexbuffer.h
+  psfstarvertexbuffer.cpp
+  psfstarvertexbuffer.h
+  starpipelineowner.h
   projectionmode.cpp
   projectionmode.h
   rectangle.h
@@ -149,6 +152,8 @@ set(CELENGINE_SOURCES
   univcoord.h
   universe.cpp
   universe.h
+  urlmanager.cpp
+  urlmanager.h
   viewporteffect.h
   viewporteffect.cpp
   virtualtex.cpp

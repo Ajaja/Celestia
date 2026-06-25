@@ -38,7 +38,6 @@
 #include "renderglsl.h"
 #include "renderinfo.h"
 #include "shadermanager.h"
-#include "shadowmap.h" // GL_ONLY_SHADOWS definition
 #include "texture.h"
 
 using namespace celestia;
@@ -84,6 +83,11 @@ void renderGeometryShadow_GLSL(RenderGeometry* geometry,
     GLint oldFboId;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &oldFboId);
     shadowFbo->bind();
+    // Disable scissor test while rendering to shadow FBO to prevent
+    // multi-view scissor rectangles from clipping the shadow map.
+    GLboolean scissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
+    if (scissorEnabled)
+        glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, shadowFbo->width(), shadowFbo->height());
 
     // Write only to the depth buffer
@@ -115,6 +119,8 @@ void renderGeometryShadow_GLSL(RenderGeometry* geometry,
     // Re-enable the color buffer
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glCullFace(GL_BACK);
+    if (scissorEnabled)
+        glEnable(GL_SCISSOR_TEST);
     shadowFbo->unbind(oldFboId);
 }
 
@@ -413,9 +419,7 @@ void renderGeometry_GLSL(RenderGeometry* geometry,
         glActiveTexture(GL_TEXTURE0);
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, shadowBuffer->depthTexture());
-#if GL_ONLY_SHADOWS
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
-#endif
 
         glBegin(GL_QUADS);
         float side = 300.0f;

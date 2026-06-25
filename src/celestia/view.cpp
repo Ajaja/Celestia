@@ -276,28 +276,24 @@ View::updateFBOs(const std::vector<std::unique_ptr<ViewportEffect>>& effects, in
     if (currentSamples < 1)
         currentSamples = 1;
 
-#ifdef GL_ES
-    int samplesToRequest = celestia::gl::checkVersion(celestia::gl::GLES_3_0) ? currentSamples : 1;
-#else
     int samplesToRequest = currentSamples;
-#endif
 
     if (static_cast<int>(fbos.size()) != count)
         fbos.resize(count);
 
-    for (int i = 0; i < count; i++)
+    // Walk backwards through the chain: this lets us propagate float-source
+    // requirements towards index 0 in a single pass (if any later effect
+    // needs a float source, all earlier FBOs must also be float so
+    // linear-light precision is preserved end-to-end — a half-float
+    // tonemap fed by an unorm8 intermediate would still band).
+    bool useFloat = false;
+    for (int i = count - 1; i >= 0; i--)
     {
+        useFloat = useFloat || effects[i]->needsFloatSource();
+
         // Only the first FBO needs MSAA to match the output framebuffer.
         // Subsequent FBOs receive already-resolved blits so samples=1 suffices.
         int samples = (i == 0) ? samplesToRequest : 1;
-
-        // Use a float color buffer only when the consuming effect requires it
-        // (e.g. the sRGB tonemap needs linear-light precision).
-        bool useFloat = effects[i]->needsFloatSource();
-#ifdef GL_ES
-        if (useFloat && !celestia::gl::checkVersion(celestia::gl::GLES_3_0) && !celestia::gl::OES_texture_half_float)
-            useFloat = false;
-#endif
 
         auto& fbo = fbos[i];
 
@@ -309,7 +305,7 @@ View::updateFBOs(const std::vector<std::unique_ptr<ViewportEffect>>& effects, in
             continue;
 
         fbo = std::make_unique<FramebufferObject>(newWidth, newHeight,
-                                                  FramebufferObject::ColorAttachment | FramebufferObject::DepthAttachment,
+                                                  FramebufferObject::Attachment::Color | FramebufferObject::Attachment::Depth,
                                                   samples,
                                                   useFloat);
         if (!fbo->isValid())

@@ -87,7 +87,7 @@ Body::setDefaultProperties()
     density = 0.0f;
     bondAlbedo = 0.5f;
     geomAlbedo = 0.5f;
-    reflectivity = 0.5f;
+    sphAlbedo = 0.5f;
     temperature = 0.0f;
     emissivity = 1.0f;
     internalHeatFlux = 0.0f;
@@ -367,15 +367,15 @@ Body::setBondAlbedo(float _bondAlbedo)
 }
 
 float
-Body::getReflectivity() const
+Body::getSphAlbedo() const
 {
-    return reflectivity;
+    return sphAlbedo;
 }
 
 void
-Body::setReflectivity(float _reflectivity)
+Body::setSphAlbedo(float _sphAlbedo)
 {
-    reflectivity = _reflectivity;
+    sphAlbedo = _sphAlbedo;
 }
 
 float
@@ -847,7 +847,7 @@ Body::getLuminosity(float sunLuminosity,
     // Compute the total energy hitting the planet
     double incidentEnergy = satIrradiance * math::circleArea(radius * 1000);
 
-    double reflectedEnergy = incidentEnergy * getReflectivity();
+    double reflectedEnergy = incidentEnergy * getGeomAlbedo();
 
     // Compute the luminosity (i.e. power relative to solar power)
     return static_cast<float>(reflectedEnergy / astro::SOLAR_POWER);
@@ -948,18 +948,6 @@ Body::getOrbitClassification() const
     if (util::is_set(orbitClass, BodyClassification::Spacecraft))
         return BodyClassification::Spacecraft;
     return BodyClassification::Invisible;
-}
-
-const std::string&
-Body::getInfoURL() const
-{
-    return infoURL;
-}
-
-void
-Body::setInfoURL(std::string&& _infoURL)
-{
-    infoURL = std::move(_infoURL);
 }
 
 /*! Sets whether or not the object is visible.

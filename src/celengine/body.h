@@ -242,8 +242,8 @@ public:
     void setGeomAlbedo(float);
     float getBondAlbedo() const;
     void setBondAlbedo(float);
-    float getReflectivity() const;
-    void setReflectivity(float);
+    float getSphAlbedo() const;
+    void setSphAlbedo(float);
     float getTemperature(double t = 0) const;
     void setTemperature(float);
     float getEmissivity() const;
@@ -253,8 +253,6 @@ public:
 
     BodyClassification getClassification() const;
     void setClassification(BodyClassification);
-    const std::string& getInfoURL() const;
-    void setInfoURL(std::string&&);
 
     PlanetarySystem* getSatellites() const;
     PlanetarySystem* getOrCreateSatellites();
@@ -367,7 +365,7 @@ private:
     float density{ 0.0f };
     float geomAlbedo{ 0.5f };
     float bondAlbedo{ 0.5f };
-    float reflectivity{ 0.5f };
+    float sphAlbedo{ 0.5f };
     float temperature{ 0.0f };
     float emissivity{ 1.0f };
     float internalHeatFlux{ 0.0f };
@@ -381,8 +379,6 @@ private:
     Surface surface{ Color(1.0f, 1.0f, 1.0f) };
 
     BodyClassification classification{ BodyClassification::Unknown };
-
-    std::string infoURL;
 
     // Track enabled features to allow fast rejection during lookup
     BodyFeatures features{ BodyFeatures::None };

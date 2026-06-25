@@ -291,6 +291,8 @@ createVertices(std::vector<float>& vertices,
 LODSphereMesh::~LODSphereMesh()
 {
     glDeleteBuffers(vertexBuffers.size(), vertexBuffers.data());
+    if (vao != 0)
+        glDeleteVertexArrays(1, &vao);
 }
 
 
@@ -419,7 +421,11 @@ void LODSphereMesh::render(unsigned int attributes,
                          GL_STREAM_DRAW);
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        glGenVertexArrays(1, &vao);
     }
+
+    glBindVertexArray(vao);
 
     currentVB = 0;
     glBindBuffer(GL_ARRAY_BUFFER, vertexBuffers[currentVB]);

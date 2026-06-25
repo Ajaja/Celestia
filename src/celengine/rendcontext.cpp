@@ -21,7 +21,6 @@
 #include "lightenv.h"
 #include "rendcontext.h"
 #include "render.h"
-#include "shadowmap.h" // GL_ONLY_SHADOWS definition
 #include "texmanager.h"
 #include "texture.h"
 
@@ -134,8 +133,7 @@ RenderContext::drawGroup(gl::VertexObject &vao, const cmod::PrimitiveGroup& grou
             glVertexAttrib1f(CelestiaGLProgram::PointSizeAttributeIndex, 1.0f);
 #ifndef GL_ES
         drawPoints = true;
-        glEnable(GL_POINT_SPRITE);
-        glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
+        glEnable(GL_PROGRAM_POINT_SIZE);
 #endif
         glActiveTexture(GL_TEXTURE0);
     }
@@ -145,8 +143,7 @@ RenderContext::drawGroup(gl::VertexObject &vao, const cmod::PrimitiveGroup& grou
 #ifndef GL_ES
     if (drawPoints)
     {
-        glDisable(GL_POINT_SPRITE);
-        glDisable(GL_VERTEX_PROGRAM_POINT_SIZE);
+        glDisable(GL_PROGRAM_POINT_SIZE);
     }
 #endif
 }
@@ -412,9 +409,7 @@ GLSL_RenderContext::makeCurrent(const cmod::Material& m)
     {
         glActiveTexture(GL_TEXTURE0 + nTextures);
         glBindTexture(GL_TEXTURE_2D, shadowMap);
-#if GL_ONLY_SHADOWS
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE);
-#endif
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
         Eigen::Matrix4f shadowBias(Eigen::Matrix4f::Zero());
         shadowBias.diagonal() = Eigen::Vector4f(0.5f, 0.5f, 0.5f, 1.0f);
         shadowBias.col(3) = Eigen::Vector4f(0.5f, 0.5f, 0.5f, 1.0f);

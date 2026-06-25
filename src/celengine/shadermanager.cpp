@@ -46,9 +46,7 @@ namespace util = celestia::util;
 
 namespace
 {
-#if GL_ONLY_SHADOWS
 constexpr const int ShadowSampleKernelWidth = 2;
-#endif
 
 const std::filesystem::path ShaderDirectory{ "shaders" };
 
@@ -62,6 +60,9 @@ constexpr std::array StaticShaderBaseNames
     "globular"sv,
     "largestar"sv,
     "passthrough"sv,
+    "psfstarglow"sv,
+    "psfstarglowlarge"sv,
+    "psfstarpoint"sv,
     "srgb"sv,
     "selpointer"sv,
     "star"sv,
@@ -96,7 +97,7 @@ enum ShaderInOut
 };
 
 constexpr std::string_view errorVertexShaderSource = R"glsl(
-attribute vec4 in_Position;\n
+layout(location = 0) in vec4 in_Position;
 void main(void)
 {
     gl_Position = MVPMatrix * in_Position;
@@ -106,17 +107,17 @@ void main(void)
 constexpr std::string_view errorFragmentShaderSource = R"glsl(
 void main(void)
 {
-   gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+   fragColor = vec4(1.0, 0.0, 0.0, 1.0);
 }
 )glsl"sv;
 
 #ifdef GL_ES
-constexpr std::string_view VersionHeader = "#version 100\n"sv;
-constexpr std::string_view VersionHeaderGL3 = "#version 320 es\n"sv;
-constexpr std::string_view CommonHeader = "precision highp float;\n"sv;
+constexpr std::string_view VersionHeader = "#version 300 es\n"sv;
+constexpr std::string_view VersionHeaderGeom = "#version 320 es\n"sv;
+constexpr std::string_view CommonHeader = "precision highp float;\nprecision highp sampler2DShadow;\n"sv;
 #else
-constexpr std::string_view VersionHeader = "#version 120\n"sv;
-constexpr std::string_view VersionHeaderGL3 = "#version 150\n"sv;
+constexpr std::string_view VersionHeader = "#version 330\n"sv;
+constexpr std::string_view VersionHeaderGeom = "#version 330\n"sv;
 constexpr std::string_view CommonHeader = "\n"sv;
 #endif
 constexpr std::string_view VertexHeader = R"glsl(
@@ -127,7 +128,7 @@ uniform mat4 MVPMatrix;
 invariant gl_Position;
 )glsl"sv;
 
-constexpr std::string_view GeomHeaderGL3 = VertexHeader;
+constexpr std::string_view GeomHeader = VertexHeader;
 
 constexpr std::string_view VPFunctionFishEye = R"glsl(
 vec4 calc_vp(vec4 in_Position)
@@ -187,16 +188,18 @@ VertexPosition(const ShaderProperties& props)
     return util::is_set(props.texUsage, TexUsage::LineAsTriangles) ? LineVertexPosition : NormalVertexPosition;
 }
 
-constexpr std::string_view FragmentHeader = ""sv;
+constexpr std::string_view FragmentHeader = R"glsl(
+out vec4 fragColor;
+)glsl"sv;
 
 constexpr std::string_view CommonAttribs = R"glsl(
-attribute vec4 in_Position;
-attribute vec3 in_Normal;
-attribute vec4 in_TexCoord0;
-attribute vec4 in_TexCoord1;
-attribute vec4 in_TexCoord2;
-attribute vec4 in_TexCoord3;
-attribute vec4 in_Color;
+layout(location = 0) in vec4 in_Position;
+layout(location = 1) in vec3 in_Normal;
+layout(location = 2) in vec4 in_TexCoord0;
+layout(location = 3) in vec4 in_TexCoord1;
+layout(location = 4) in vec4 in_TexCoord2;
+layout(location = 5) in vec4 in_TexCoord3;
+layout(location = 8) in vec4 in_Color;
 )glsl"sv;
 
 constexpr std::string_view TextureTransformUniforms = R"glsl(
@@ -284,19 +287,19 @@ DeclareUniform(std::string_view name, ShaderVariableType type)
 std::string
 DeclareInput(std::string_view name, ShaderVariableType type)
 {
-    return fmt::format("varying {} {};\n", ShaderTypeString(type), name);
+    return fmt::format("in {} {};\n", ShaderTypeString(type), name);
 }
 
 std::string
 DeclareOutput(std::string_view name, ShaderVariableType type)
 {
-    return fmt::format("varying {} {};\n", ShaderTypeString(type), name);
+    return fmt::format("out {} {};\n", ShaderTypeString(type), name);
 }
 
 std::string
-DeclareAttribute(std::string_view name, ShaderVariableType type)
+DeclareAttribute(std::string_view name, ShaderVariableType type, int location)
 {
-    return fmt::format("attribute {} {};\n", ShaderTypeString(type), name);
+    return fmt::format("layout(location = {}) in {} {};\n", location, ShaderTypeString(type), name);
 }
 
 std::string
@@ -477,6 +480,27 @@ AssignDiffuse(unsigned int lightIndex, const ShaderProperties& props)
 }
 
 
+std::string
+LunarLambert()
+{
+    std::string source;
+
+    source += "phaseAngle = degrees(acos(clamp(cosPhaseAngle, -1.0, 1.0)));\n";
+
+    // Limb-darkening parameter L(alpha) for the Moon from McEwen (1996),
+    // Lunar and Planetary Science, volume 27, page 841.
+    source += "lunarLimbDarkening = 1.0 + phaseAngle * (-0.019 + phaseAngle * (0.242e-3 - phaseAngle * 1.46e-6));\n";
+
+    // While L(alpha) is intended to be used on its own to weigh the Lambert and
+    // Lommel-Seeliger functions which compose the lunar-Lambert model, here it
+    // is multiplied by the LunarLambert parameter as a rough way to generalize
+    // it to other bodies.
+    source += "lunarWeight = lunarLambert * max(lunarLimbDarkening, 0.0);\n";
+
+    return source;
+}
+
+
 // Values used in generated shaders:
 //    N - surface normal
 //    V - view vector: the normalized direction from vertex to eye
@@ -511,9 +535,15 @@ AddDirectionalLightContrib(unsigned int i, const ShaderProperties& props)
     else if (props.hasSpecular())
     {
         if (util::is_set(props.lightModel, LightingModel::LunarLambertModel))
-            source += AssignDiffuse(i, props) + " mix(NL, NL / (max(NV, 0.001) + NL), lunarLambert);\n";
+        {
+            source += "cosPhaseAngle = dot(eyeDir, " + LightProperty(i, "direction") + ");\n";
+            source += LunarLambert();
+            source += AssignDiffuse(i, props) + " mix(NL, 2.0 * NL / (max(NV, 0.001) + NL), lunarWeight);\n";
+        }
         else
+        {
             source += SeparateDiffuse(i) + " = NL;\n";
+        }
     }
 #if 0
     else if (props.lightModel == LightingModel::OrenNayarModel)
@@ -543,7 +573,9 @@ AddDirectionalLightContrib(unsigned int i, const ShaderProperties& props)
 #endif
     else if (util::is_set(props.lightModel, LightingModel::LunarLambertModel))
     {
-        source += AssignDiffuse(i, props) + " mix(NL, NL / (max(NV, 0.001) + NL), lunarLambert);\n";
+        source += "cosPhaseAngle = dot(eyeDir, " + LightProperty(i, "direction") + ");\n";
+        source += LunarLambert();
+        source += AssignDiffuse(i, props) + " mix(NL, 2.0 * NL / (max(NV, 0.001) + NL), lunarWeight);\n";
     }
     else if (props.usesShadows())
     {
@@ -592,21 +624,7 @@ BeginLightSourceShadows(const ShaderProperties& props, unsigned int light)
         if (!gl::OES_texture_border_clamp)
             source += "if (ringShadowTexCoordX >= 0.0 && ringShadowTexCoordX <= 1.0)\n{\n";
 #endif
-        if (gl::ARB_shader_texture_lod)
-        {
-            source += "shadow *= 1.0 - texture2DLod(ringTex, vec2(ringShadowTexCoordX, 0.0), " + IndexedParameter("ringShadowLOD", light) + ").a;\n";
-        }
-        else
-        {
-            // Fallback when the texture2Dlod function is unavailable. This would be a good option
-            // for all GPUs except that some (GeForce 8 series, possibly others) have trouble with the
-            // LOD bias. It seems that the LOD bias isn't actually implemented in hardware, and is
-            // instead implemented by emitting shader instructions to compute the texture LOD using
-            // the derivative instructions and adding the bias to this result. Unfortunately, the
-            // derivative is computed from the plane equation of the triangle, which means that there
-            // are discontinuities between triangles.
-            source += "shadow *= 1.0 - texture2D(ringTex, vec2(ringShadowTexCoordX, 0.0), " + IndexedParameter("ringShadowLOD", light) + ").a;\n";
-        }
+        source += "shadow *= 1.0 - textureLod(ringTex, vec2(ringShadowTexCoordX, 0.0), " + IndexedParameter("ringShadowLOD", light) + ").a;\n";
 #ifdef GL_ES
         if (!gl::OES_texture_border_clamp)
             source += "}\n";
@@ -615,7 +633,7 @@ BeginLightSourceShadows(const ShaderProperties& props, unsigned int light)
 
     if (props.hasCloudShadowForLight(light))
     {
-        source += "shadow *= 1.0 - texture2D(cloudShadowTex, " + CloudShadowTexCoord(light) + ").a * 0.75;\n";
+        source += "shadow *= 1.0 - texture(cloudShadowTex, " + CloudShadowTexCoord(light) + ").a * 0.75;\n";
     }
 
     return source;
@@ -904,11 +922,7 @@ TextureSamplerDeclarations(const ShaderProperties& props)
 
     if (util::is_set(props.texUsage, TexUsage::ShadowMapTexture))
     {
-#if GL_ONLY_SHADOWS
         source += DeclareUniform("shadowMapTex0", Shader_Sampler2DShadow);
-#else
-        source += DeclareUniform("shadowMapTex0", Shader_Sampler2D);
-#endif
     }
 
     return source;
@@ -967,7 +981,7 @@ PointSizeDeclaration()
     std::string source;
     source += DeclareOutput("pointFade", Shader_Float);
     source += DeclareUniform("pointScale", Shader_Float);
-    source += DeclareAttribute("in_PointSize", Shader_Float);
+    source += DeclareAttribute("in_PointSize", Shader_Float, CelestiaGLProgram::PointSizeAttributeIndex);
     return source;
 }
 
@@ -995,9 +1009,9 @@ std::string
 LineDeclaration()
 {
     std::string source;
-    source += DeclareAttribute("in_PositionNext", Shader_Vector4);
-    source += DeclareAttribute("in_ScaleFactor", Shader_Float);
-    source += DeclareAttribute("in_LineSide", Shader_Float);
+    source += DeclareAttribute("in_PositionNext", Shader_Vector4, CelestiaGLProgram::NextVCoordAttributeIndex);
+    source += DeclareAttribute("in_ScaleFactor", Shader_Float, CelestiaGLProgram::ScaleFactorAttributeIndex);
+    source += DeclareAttribute("in_LineSide", Shader_Float, CelestiaGLProgram::LineSideAttributeIndex);
     source += DeclareUniform("lineWidthX", Shader_Float);
     source += DeclareUniform("lineWidthY", Shader_Float);
     source += DeclareOutput("lineU", Shader_Float);
@@ -1017,7 +1031,6 @@ std::string
 CalculateShadow()
 {
     std::string source;
-#if GL_ONLY_SHADOWS
     source += R"glsl(
 float calculateShadow()
 {
@@ -1025,53 +1038,18 @@ float calculateShadow()
     float s = 0.0;
     float bias = max(0.005 * (1.0 - cosNormalLightDir), 0.0005);
 )glsl"sv;
-    float boxFilterWidth = (float) ShadowSampleKernelWidth - 1.0f;
+    float boxFilterWidth = static_cast<float>(ShadowSampleKernelWidth) - 1.0f;
     float firstSample = -boxFilterWidth / 2.0f;
     float lastSample = firstSample + boxFilterWidth;
-    float sampleWeight = 1.0f / (float) (ShadowSampleKernelWidth * ShadowSampleKernelWidth);
+    float sampleWeight = 1.0f / static_cast<float>(ShadowSampleKernelWidth * ShadowSampleKernelWidth);
     source += fmt::format("    for (float y = {:f}; y <= {:f}; y += 1.0)\n", firstSample, lastSample);
     source += fmt::format("        for (float x = {:f}; x <= {:f}; x += 1.0)\n", firstSample, lastSample);
-    source += "            s += shadow2D(shadowMapTex0, shadowTexCoord0.xyz + vec3(x * texelSize, y * texelSize, bias)).z;\n";
+    // Modern GLSL hardware compare: returns single float (PCF result when
+    // GL_LINEAR filter + GL_COMPARE_REF_TO_TEXTURE).
+    source += "            s += texture(shadowMapTex0, shadowTexCoord0.xyz + vec3(x * texelSize, y * texelSize, bias));\n";
     source += fmt::format("    return s * {:f};\n", sampleWeight);
     source += "}\n";
-#else
-    source += R"glsl(
-float calculateShadow()
-{
-    float texelSize = 1.0 / shadowMapSize;
-    float s = 0.0;
-    float bias = max(0.005 * (1.0 - cosNormalLightDir), 0.0005);
-    for(float x = -1.0; x <= 1.0; x += 1.0)
-    {
-        for(float y = -1.0; y <= 1.0; y += 1.0)
-        {
-            float pcfDepth = texture2D(shadowMapTex0, shadowTexCoord0.xy + vec2(x * texelSize, y * texelSize)).r;
-            s += shadowTexCoord0.z - bias > pcfDepth ? 1.0 : 0.0;
-        }
-    }
-    return 1.0 - s / 9.0;
-}
-)glsl"sv;
-#endif
     return source;
-}
-
-void
-BindAttribLocations(const GLProgramBuilder& prog)
-{
-    prog.bindAttribute(CelestiaGLProgram::VertexCoordAttributeIndex,   "in_Position");
-    prog.bindAttribute(CelestiaGLProgram::NormalAttributeIndex,        "in_Normal");
-    prog.bindAttribute(CelestiaGLProgram::TextureCoord0AttributeIndex, "in_TexCoord0");
-    prog.bindAttribute(CelestiaGLProgram::TextureCoord1AttributeIndex, "in_TexCoord1");
-    prog.bindAttribute(CelestiaGLProgram::TextureCoord2AttributeIndex, "in_TexCoord2");
-    prog.bindAttribute(CelestiaGLProgram::TextureCoord3AttributeIndex, "in_TexCoord3");
-    prog.bindAttribute(CelestiaGLProgram::ColorAttributeIndex,         "in_Color");
-    prog.bindAttribute(CelestiaGLProgram::IntensityAttributeIndex,     "in_Intensity");
-    prog.bindAttribute(CelestiaGLProgram::NextVCoordAttributeIndex,    "in_PositionNext");
-    prog.bindAttribute(CelestiaGLProgram::ScaleFactorAttributeIndex,   "in_ScaleFactor");
-    prog.bindAttribute(CelestiaGLProgram::LineSideAttributeIndex,      "in_LineSide");
-    prog.bindAttribute(CelestiaGLProgram::TangentAttributeIndex,       "in_Tangent");
-    prog.bindAttribute(CelestiaGLProgram::PointSizeAttributeIndex,     "in_PointSize");
 }
 
 std::string
@@ -1139,7 +1117,6 @@ CreateErrorProgram(bool fisheyeEnabled, GLShaderStatus& status)
         return GLProgram{};
     }
 
-    BindAttribLocations(builder);
 
     GLProgram program = builder.link(status);
     if (status != GLShaderStatus::OK)
@@ -1227,7 +1204,7 @@ R"glsl(
 
     source += DeclareLights(props);
     source += TextureCoordDeclarations(props, Shader_Out);
-    source += DeclareUniform("textureOffset", Shader_Float);
+    source += DeclareUniform("texCoordOffset", Shader_Float);
 
     if (props.usePointSize())
         source += PointSizeDeclaration();
@@ -1237,7 +1214,7 @@ R"glsl(
 
     if (props.usesTangentSpaceLighting())
     {
-        source += DeclareAttribute("in_Tangent", Shader_Vector3);
+        source += DeclareAttribute("in_Tangent", Shader_Vector3, CelestiaGLProgram::TangentAttributeIndex);
         source += DeclareOutput("tangent", Shader_Vector3);
     }
 
@@ -1312,20 +1289,20 @@ R"glsl(
                                          TexUsage::OverlayTexture))
         {
             source += "diffTexCoord = " + TexCoord2D(nTexCoords, hasTexCoordTransform) + ";\n";
-            source += "diffTexCoord.x += textureOffset;\n";
+            source += "diffTexCoord.x += texCoordOffset;\n";
         }
     }
     else
     {
         if (util::is_set(props.texUsage, TexUsage::DiffuseTexture))
         {
-            source += "diffTexCoord = " + TexCoord2D(nTexCoords, hasTexCoordTransform) + " + vec2(textureOffset, 0.0);\n";
+            source += "diffTexCoord = " + TexCoord2D(nTexCoords, hasTexCoordTransform) + " + vec2(texCoordOffset, 0.0);\n";
             nTexCoords++;
         }
 
         if (util::is_set(props.texUsage, TexUsage::NormalTexture))
         {
-            source += "normTexCoord = " + TexCoord2D(nTexCoords, hasTexCoordTransform) + " + vec2(textureOffset, 0.0);\n";
+            source += "normTexCoord = " + TexCoord2D(nTexCoords, hasTexCoordTransform) + " + vec2(texCoordOffset, 0.0);\n";
             nTexCoords++;
         }
 
@@ -1439,27 +1416,11 @@ R"glsl(
 GLFragmentShader
 buildFragmentShader(const ShaderProperties& props)
 {
-    // Whether the analytical line-edge AA path is available. Desktop GL has
-    // fwidth() in core (#version 110+); GLSL ES 1.0 needs the optional
-    // GL_OES_standard_derivatives extension. If the extension is missing on
-    // a GLES2 device we fall back silently to the original (unaliased)
-    // triangulated lines.
-    const bool emitLineAA = util::is_set(props.texUsage, TexUsage::LineAsTriangles)
-#ifdef GL_ES
-                            && gl::OES_standard_derivatives
-#endif
-        ;
+    const bool emitLineAA = util::is_set(props.texUsage, TexUsage::LineAsTriangles);
 
     std::string source(VersionHeader);
-    // Without GL_ARB_shader_texture_lod enabled one can use texture2DLod
-    // in vertext shaders only
-    if (gl::ARB_shader_texture_lod)
-        source += "#extension GL_ARB_shader_texture_lod : enable\n";
-#ifdef GL_ES
-    if (emitLineAA)
-        source += "#extension GL_OES_standard_derivatives : enable\n";
-#endif
     source += CommonHeader;
+    source += FragmentHeader;
 
     std::string diffTexCoord("diffTexCoord");
     std::string specTexCoord("specTexCoord");
@@ -1611,6 +1572,13 @@ buildFragmentShader(const ShaderProperties& props)
     if (props.lightModel != LightingModel::UnlitModel)
     {
         source += DeclareLocal("NL", Shader_Float);
+        if (util::is_set(props.lightModel, LightingModel::LunarLambertModel))
+        {
+            source += DeclareLocal("cosPhaseAngle", Shader_Float);
+            source += DeclareLocal("phaseAngle", Shader_Float);
+            source += DeclareLocal("lunarLimbDarkening", Shader_Float);
+            source += DeclareLocal("lunarWeight", Shader_Float);
+        }
         for (unsigned int i = 0; i < props.nLights; i++)
             source += AddDirectionalLightContrib(i, props);
     }
@@ -1638,15 +1606,15 @@ buildFragmentShader(const ShaderProperties& props)
             if (util::is_set(props.texUsage, TexUsage::CompressedNormalTexture))
             {
                 source += "vec3 n;\n";
-                source += "n.xy = texture2D(normTex, " + normTexCoord + ".st).ag * 2.0 - vec2(1.0);\n";
+                source += "n.xy = texture(normTex, " + normTexCoord + ".st).ag * 2.0 - vec2(1.0);\n";
                 source += "n.z = sqrt(1.0 - n.x * n.x - n.y * n.y);\n";
             }
             else
             {
                 // TODO: normalizing the filtered normal texture value noticeably improves the appearance; add
                 // an option for this.
-                //source += "vec3 n = normalize(texture2D(normTex, " + normTexCoord + ".st).xyz * 2.0 - vec3(1.0));\n";
-                source += "vec3 n = texture2D(normTex, " + normTexCoord + ".st).xyz * 2.0 - vec3(1.0);\n";
+                //source += "vec3 n = normalize(texture(normTex, " + normTexCoord + ".st).xyz * 2.0 - vec3(1.0));\n";
+                source += "vec3 n = texture(normTex, " + normTexCoord + ".st).xyz * 2.0 - vec3(1.0);\n";
             }
         }
         else
@@ -1676,7 +1644,9 @@ buildFragmentShader(const ShaderProperties& props)
             if (util::is_set(props.lightModel, LightingModel::LunarLambertModel))
             {
                 source += "NL = max(0.0, NL);\n";
-                source += "l = mix(NL, (NL / (max(NV, 0.001) + NL)), lunarLambert) * clamp(" + LightDir_tan(i) + ".z * 8.0, 0.0, 1.0);\n";
+                source += "cosPhaseAngle = dot(eyeDir_tan, " + LightDir_tan(i) + ");\n";
+                source += LunarLambert();
+                source += "l = mix(NL, 2.0 * NL / (max(NV, 0.001) + NL), lunarWeight) * clamp(" + LightDir_tan(i) + ".z * 8.0, 0.0, 1.0);\n";
             }
             else
             {
@@ -1737,9 +1707,9 @@ buildFragmentShader(const ShaderProperties& props)
     if (util::is_set(props.texUsage, TexUsage::DiffuseTexture))
     {
         if (props.usePointSize())
-            source += "color = texture2D(diffTex, gl_PointCoord);\n";
+            source += "color = texture(diffTex, gl_PointCoord);\n";
         else
-            source += "color = texture2D(diffTex, " + diffTexCoord + ".st);\n";
+            source += "color = texture(diffTex, " + diffTexCoord + ".st);\n";
     }
     else
     {
@@ -1756,7 +1726,7 @@ buildFragmentShader(const ShaderProperties& props)
     // Mix in the overlay color with the base color
     if (util::is_set(props.texUsage, TexUsage::OverlayTexture))
     {
-        source += "vec4 overlayColor = texture2D(overlayTex, overlayTexCoord.st);\n";
+        source += "vec4 overlayColor = texture(overlayTex, overlayTexCoord.st);\n";
         source += "color.rgb = mix(color.rgb, overlayColor.rgb, overlayColor.a);\n";
     }
 
@@ -1764,15 +1734,15 @@ buildFragmentShader(const ShaderProperties& props)
     {
         // Add in the specular color
         if (util::is_set(props.texUsage, TexUsage::SpecularInDiffuseAlpha))
-            source += "gl_FragColor = vec4(color.rgb, 1.0) * diff + float(color.a) * spec;\n";
+            source += "fragColor = vec4(color.rgb, 1.0) * diff + float(color.a) * spec;\n";
         else if (util::is_set(props.texUsage, TexUsage::SpecularTexture))
-            source += "gl_FragColor = color * diff + texture2D(specTex, " + specTexCoord + ".st) * spec;\n";
+            source += "fragColor = color * diff + texture(specTex, " + specTexCoord + ".st) * spec;\n";
         else
-            source += "gl_FragColor = color * diff + spec;\n";
+            source += "fragColor = color * diff + spec;\n";
     }
     else
     {
-        source += "gl_FragColor = color * diff;\n";
+        source += "fragColor = color * diff;\n";
     }
 
     if (util::is_set(props.texUsage, TexUsage::NightTexture))
@@ -1785,14 +1755,14 @@ buildFragmentShader(const ShaderProperties& props)
         }
 
         source += NightTextureBlend();
-        source += "gl_FragColor += texture2D(nightTex, " + nightTexCoord + ".st) * totalLight;\n";
+        source += "fragColor += texture(nightTex, " + nightTexCoord + ".st) * totalLight;\n";
     }
 
     // Add in the emissive color
     // TODO: support a constant emissive color, not just an emissive texture
     if (util::is_set(props.texUsage, TexUsage::EmissiveTexture))
     {
-        source += "gl_FragColor += texture2D(emissiveTex, " + emissiveTexCoord + ".st);\n";
+        source += "fragColor += texture(emissiveTex, " + emissiveTexCoord + ".st);\n";
     }
 
     // Include the effect of atmospheric scattering.
@@ -1801,7 +1771,13 @@ buildFragmentShader(const ShaderProperties& props)
         source += DeclareLocal("scatterEx", Shader_Vector3);
         source += DeclareLocal("scatterColor", Shader_Vector3);
         source += AtmosphericEffects(props);
-        source += "gl_FragColor.rgb = gl_FragColor.rgb * scatterEx + scatterColor;\n";
+        source += "fragColor.rgb = fragColor.rgb * scatterEx + scatterColor;\n";
+    }
+
+    // Limb darkening
+    if (props.lightModel == LightingModel::StarModel)
+    {
+        source += "fragColor.rgb = fragColor.rgb * (1.0 - vec3(1.0 - NV) * vec3(0.56, 0.61, 0.72));\n";
     }
 
     if (emitLineAA)
@@ -1811,7 +1787,7 @@ buildFragmentShader(const ShaderProperties& props)
         // visible edge — fwidth(lineU) is ~2/inflatedPx, so 0.5*fwidth gives
         // a half-pixel half-width.
         source += "float lineHalfPx = fwidth(lineU) * 0.5;\n";
-        source += "gl_FragColor.a *= 1.0 - smoothstep(lineEdge - lineHalfPx, lineEdge + lineHalfPx, abs(lineU));\n";
+        source += "fragColor.a *= 1.0 - smoothstep(lineEdge - lineHalfPx, lineEdge + lineHalfPx, abs(lineU));\n";
     }
 
     source += "}\n";
@@ -1882,6 +1858,7 @@ buildRingsFragmentShader(const ShaderProperties& props)
 {
     std::string source(VersionHeader);
     source += CommonHeader;
+    source += FragmentHeader;
 
     source += DeclareUniform("ambientColor", Shader_Vector3);
 
@@ -1921,7 +1898,7 @@ buildRingsFragmentShader(const ShaderProperties& props)
 
     source += DeclareLocal("color", Shader_Vector4);
     if (util::is_set(props.texUsage, TexUsage::DiffuseTexture))
-        source += "color = texture2D(diffTex, diffTexCoord.st);\n";
+        source += "color = texture(diffTex, diffTexCoord.st);\n";
     else
         source += "color = vec4(1.0);\n";
     source += DeclareLocal("opticalDepth", Shader_Float, "color.a");
@@ -1970,7 +1947,7 @@ buildRingsFragmentShader(const ShaderProperties& props)
         }
     }
 
-    source += "gl_FragColor = vec4(color.rgb * diff.rgb, opticalDepth);\n";
+    source += "fragColor = vec4(color.rgb * diff.rgb, opticalDepth);\n";
 
     source += "}\n";
 
@@ -2024,6 +2001,7 @@ buildAtmosphereFragmentShader(const ShaderProperties& props)
 {
     std::string source(VersionHeader);
     source += CommonHeader;
+    source += FragmentHeader;
 
     source += DeclareLights(props);
     source += DeclareUniform("eyePosition", Shader_Vector3);
@@ -2061,7 +2039,7 @@ buildAtmosphereFragmentShader(const ShaderProperties& props)
         source += "    color += (phRayleigh * rayleighCoeff + phMie * mieCoeff) * invScatterCoeffSum * " + ScatteredColor(i) + ";\n";
     }
 
-    source += "    gl_FragColor = vec4(color, dot(scatterEx, vec3(0.333)));\n";
+    source += "    fragColor = vec4(color, dot(scatterEx, vec3(0.333)));\n";
     source += "}\n";
 
     DumpFSSource(source);
@@ -2143,6 +2121,7 @@ buildEmissiveFragmentShader(const ShaderProperties& props)
 {
     std::string source(VersionHeader);
     source += CommonHeader;
+    source += FragmentHeader;
 
     if (util::is_set(props.texUsage, TexUsage::DiffuseTexture))
         source += DeclareUniform("diffTex", Shader_Sampler2D);
@@ -2169,13 +2148,13 @@ buildEmissiveFragmentShader(const ShaderProperties& props)
     if (util::is_set(props.texUsage, TexUsage::DiffuseTexture))
     {
         if (props.usePointSize())
-            source += "    gl_FragColor = " + colorSource + " * texture2D(diffTex, gl_PointCoord);\n";
+            source += "    fragColor = " + colorSource + " * texture(diffTex, gl_PointCoord);\n";
         else
-            source += "    gl_FragColor = " + colorSource + " * texture2D(diffTex, v_TexCoord0.st);\n";
+            source += "    fragColor = " + colorSource + " * texture(diffTex, v_TexCoord0.st);\n";
     }
     else
     {
-        source += "    gl_FragColor = " + colorSource + " ;\n";
+        source += "    fragColor = " + colorSource + " ;\n";
     }
 
     source += "}\n";
@@ -2276,6 +2255,7 @@ buildParticleFragmentShader(const ShaderProperties& props)
 
     source += VersionHeader;
     source += CommonHeader;
+    source += FragmentHeader;
 
     if (util::is_set(props.texUsage, TexUsage::DiffuseTexture))
         source += DeclareUniform("diffTex", Shader_Sampler2D);
@@ -2310,9 +2290,9 @@ buildParticleFragmentShader(const ShaderProperties& props)
     source += "\nvoid main(void)\n{\n";
 
     if (util::is_set(props.texUsage, TexUsage::DiffuseTexture))
-        source += "    gl_FragColor = v_Color * texture2D(diffTex, gl_PointCoord);\n";
+        source += "    fragColor = v_Color * texture(diffTex, gl_PointCoord);\n";
     else
-        source += "    gl_FragColor = v_Color;\n";
+        source += "    fragColor = v_Color;\n";
 
     source += "}\n";
     // End of main()
@@ -2325,12 +2305,6 @@ buildParticleFragmentShader(const ShaderProperties& props)
 
     return GLFragmentShader{};
 }
-
-enum class GLVersion
-{
-    GL2,
-    GL3,
-};
 
 std::shared_ptr<CelestiaGLProgram>
 buildProgram(const ShaderProperties& props, bool fisheyeEnabled)
@@ -2373,7 +2347,6 @@ buildProgram(const ShaderProperties& props, bool fisheyeEnabled)
         {
             builder.attach(std::move(vs));
             builder.attach(std::move(fs));
-            BindAttribLocations(builder);
             program = builder.link(status);
         }
     }
@@ -2389,12 +2362,10 @@ buildProgram(const ShaderProperties& props, bool fisheyeEnabled)
 }
 
 std::shared_ptr<CelestiaGLProgram>
-buildProgram(std::string_view vs, std::string_view fs, GLVersion glVersion, bool fisheyeEnabled)
+buildProgram(std::string_view vs, std::string_view fs, bool fisheyeEnabled)
 {
-    auto versionHeader = glVersion == GLVersion::GL3 ? VersionHeaderGL3 : VersionHeader;
-
-    std::string vsSrc = fmt::format("{}{}{}{}{}\n", versionHeader, CommonHeader, VertexHeader, VPFunction(fisheyeEnabled), vs);
-    std::string fsSrc = fmt::format("{}{}{}{}\n", versionHeader, CommonHeader, FragmentHeader, fs);
+    std::string vsSrc = fmt::format("{}{}{}{}{}\n", VersionHeader, CommonHeader, VertexHeader, VPFunction(fisheyeEnabled), vs);
+    std::string fsSrc = fmt::format("{}{}{}{}\n", VersionHeader, CommonHeader, FragmentHeader, fs);
 
     DumpVSSource(vsSrc);
     DumpFSSource(fsSrc);
@@ -2411,7 +2382,6 @@ buildProgram(std::string_view vs, std::string_view fs, GLVersion glVersion, bool
         {
             builder.attach(std::move(_vs));
             builder.attach(std::move(_fs));
-            BindAttribLocations(builder);
             program = builder.link(status);
         }
     }
@@ -2427,23 +2397,11 @@ buildProgram(std::string_view vs, std::string_view fs, GLVersion glVersion, bool
 }
 
 std::shared_ptr<CelestiaGLProgram>
-buildProgram(std::string_view vs, std::string_view fs, bool fisheyeEnabled)
-{
-    return ::buildProgram(vs, fs, GLVersion::GL2, fisheyeEnabled);
-}
-
-std::shared_ptr<CelestiaGLProgram>
-buildProgramGL3(std::string_view vs, std::string_view fs, bool fisheyeEnabled)
-{
-    return ::buildProgram(vs, fs, GLVersion::GL3, fisheyeEnabled);
-}
-
-std::shared_ptr<CelestiaGLProgram>
-buildProgramGL3(std::string_view vs,
-                std::string_view gs,
-                std::string_view fs,
-                const ShaderManager::GeomShaderParams* params,
-                bool fisheyeEnabled)
+buildProgramGeom(std::string_view vs,
+                 std::string_view gs,
+                 std::string_view fs,
+                 const ShaderManager::GeomShaderParams* params,
+                 bool fisheyeEnabled)
 {
     std::string layout;
     if (params)
@@ -2454,9 +2412,9 @@ buildProgramGL3(std::string_view vs,
                              params->nOutVertices);
     }
 
-    auto vsSrc = fmt::format("{}{}{}{}\n", VersionHeaderGL3, CommonHeader, VertexHeader, vs);
-    auto gsSrc = fmt::format("{}{}{}{}{}{}\n", VersionHeaderGL3, CommonHeader, layout, GeomHeaderGL3, VPFunction(fisheyeEnabled), gs);
-    auto fsSrc = fmt::format("{}{}{}{}\n", VersionHeaderGL3, CommonHeader, FragmentHeader, fs);
+    auto vsSrc = fmt::format("{}{}{}{}\n", VersionHeaderGeom, CommonHeader, VertexHeader, vs);
+    auto gsSrc = fmt::format("{}{}{}{}{}{}\n", VersionHeaderGeom, CommonHeader, layout, GeomHeader, VPFunction(fisheyeEnabled), gs);
+    auto fsSrc = fmt::format("{}{}{}{}\n", VersionHeaderGeom, CommonHeader, FragmentHeader, fs);
 
     DumpVSSource(vsSrc);
     DumpGSSource(gsSrc);
@@ -2476,7 +2434,6 @@ buildProgramGL3(std::string_view vs,
             builder.attach(std::move(_vs));
             builder.attach(std::move(_gs));
             builder.attach(std::move(_fs));
-            BindAttribLocations(builder);
             program = builder.link(status);
         }
     }
@@ -2704,43 +2661,17 @@ ShaderManager::getShader(const ShaderProperties& props)
 }
 
 CelestiaGLProgram*
-ShaderManager::getShader(StaticShader staticShader)
+ShaderManager::getShader(StaticShader staticShader, const GeomShaderParams* gsParams)
 {
     auto& shader = m_staticShaders[static_cast<std::size_t>(staticShader)];
     if (!shader)
-        shader = loadShader(staticShader);
+        shader = loadShader(staticShader, gsParams);
 
     return shader.get();
 }
 
 std::shared_ptr<CelestiaGLProgram>
-ShaderManager::loadShader(StaticShader staticShader)
-{
-    auto name = StaticShaderBaseNames[static_cast<std::size_t>(staticShader)];
-    auto vs = ReadShaderFile(ShaderDirectory / std::filesystem::u8path(fmt::format("{}_vert.glsl", name)));
-    if (vs.empty())
-        return getErrorProgram();
-
-    auto fs = ReadShaderFile(ShaderDirectory / std::filesystem::u8path(fmt::format("{}_frag.glsl", name)));
-    if (fs.empty())
-        return getErrorProgram();
-
-    auto result = buildProgram(vs, fs, m_fisheyeEnabled);
-    return result ? result : getErrorProgram();
-}
-
-CelestiaGLProgram*
-ShaderManager::getShaderGL3(StaticShader staticShader, const GeomShaderParams* gsParams)
-{
-    auto& shader = m_staticShaders[static_cast<std::size_t>(staticShader)];
-    if (!shader)
-        shader = loadShaderGL3(staticShader, gsParams);
-
-    return shader.get();
-}
-
-std::shared_ptr<CelestiaGLProgram>
-ShaderManager::loadShaderGL3(StaticShader staticShader, const GeomShaderParams* gsParams)
+ShaderManager::loadShader(StaticShader staticShader, const GeomShaderParams* gsParams)
 {
     auto name = StaticShaderBaseNames[static_cast<std::size_t>(staticShader)];
     auto vs = ReadShaderFile(ShaderDirectory / std::filesystem::u8path(fmt::format("{}_vert.glsl", name)));
@@ -2758,11 +2689,11 @@ ShaderManager::loadShaderGL3(StaticShader staticShader, const GeomShaderParams* 
         if (gs.empty())
             return getErrorProgram();
 
-        result = buildProgramGL3(vs, gs, fs, gsParams, m_fisheyeEnabled);
+        result = buildProgramGeom(vs, gs, fs, gsParams, m_fisheyeEnabled);
     }
     else
     {
-        result = buildProgramGL3(vs, fs, m_fisheyeEnabled);
+        result = buildProgram(vs, fs, m_fisheyeEnabled);
     }
 
     return result ? result : getErrorProgram();
@@ -2931,7 +2862,7 @@ CelestiaGLProgram::initParameters()
         ringRadius           = floatParam("ringRadius");
     }
 
-    textureOffset = floatParam("textureOffset");
+    textureOffset = floatParam("texCoordOffset");
 
     if (util::is_set(props.texUsage, TexUsage::CloudShadowTexture))
     {
@@ -3063,16 +2994,6 @@ CelestiaGLProgram::setLightParameters(const LightingState& ls,
         Eigen::Vector3f lightColor = light.color.toVector3() * light.irradiance;
         lights[i].color = light.color.toVector3();
         lights[i].direction = light.direction_obj;
-
-        // Include a phase-based normalization factor to prevent planets from appearing
-        // too dim when rendered with non-Lambertian photometric functions.
-        float cosPhaseAngle = light.direction_obj.dot(ls.eyeDir_obj);
-        if (util::is_set(props.lightModel, LightingModel::LunarLambertModel))
-        {
-            float photometricNormFactor = std::max(1.0f, 1.0f + cosPhaseAngle * 0.5f);
-            lightColor *= photometricNormFactor;
-        }
-
         lights[i].diffuse = lightColor.cwiseProduct(diffuseColor);
         lights[i].brightness = lightColor.maxCoeff();
         lights[i].specular = lightColor.cwiseProduct(specularColor);

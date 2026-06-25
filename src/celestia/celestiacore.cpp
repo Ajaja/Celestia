@@ -58,6 +58,7 @@
 #include <celengine/timeline.h>
 #include <celengine/timelinephase.h>
 #include <celengine/rectangle.h>
+#include <celengine/urlmanager.h>
 #include <celengine/visibleregion.h>
 #include <celengine/warpmesh.h>
 #include <celestia/configfile.h>
@@ -1056,6 +1057,9 @@ void CelestiaCore::charEntered(const char *c_p, int modifiers)
         case StarStyle::ScaledDiscStars:
             flash(_("Star style: scaled discs"));
             break;
+        case StarStyle::PointSpreadFunction:
+            flash(_("Star style: point spread function"));
+            break;
         default:
             break;
         }
@@ -1912,7 +1916,49 @@ void CelestiaCore::tick(double dt)
     if (m_scriptHook != nullptr)
         m_scriptHook->call("tick", dt);
 
+    // Alt-azimuth mode: re-level the camera each frame to keep the horizon
+    // flat, and stop the view from entering a small cone around the
+    // zenith/nadir where the right axis (forward x up) is undefined.
+    auto altAzActive = altAzimuthMode && !refObject.empty();
+    Quaterniond preUpdateOrientation;
+    if (altAzActive)
+        preUpdateOrientation = sim->getObserver().getOrientation();
+
     sim->update(dt);
+
+    if (altAzActive)
+    {
+        Observer& observer = sim->getObserver();
+        Vector3d upWorld = observer.getPosition().offsetFromKm(
+            refObject.getPosition(sim->getTime()));
+        if (double upN = upWorld.norm(); upN > 0.0)
+        {
+            upWorld /= upN;
+            Quaterniond q = observer.getOrientation();
+            Vector3d forward = q.conjugate() * Vector3d(0.0, 0.0, -1.0);
+            Vector3d desiredUp = upWorld - forward * forward.dot(upWorld);
+            double sinAngle = desiredUp.norm(); // 0 at zenith/nadir, 1 at horizon
+
+            // Prevent the view from crossing zenith/nadir.
+            constexpr double kZenithLimit = 0.05; // sin(~3 deg)
+            if (sinAngle > kZenithLimit)
+            {
+                // Eliminate roll: rebuild the orientation from a leveled basis.
+                desiredUp /= sinAngle;
+                Eigen::Matrix3d basis;
+                basis.col(0) = forward.cross(desiredUp);
+                basis.col(1) = desiredUp;
+                basis.col(2) = -forward;
+                observer.setOrientation(Quaterniond(basis).conjugate());
+            }
+            else
+            {
+                // Inside the zenith/nadir cone: reject this frame's rotation.
+                observer.setOrientation(preUpdateOrientation);
+                observer.setAngularVelocity(Vector3d::Zero());
+            }
+        }
+    }
 }
 
 
@@ -2013,26 +2059,34 @@ void CelestiaCore::draw(View* view)
     auto viewWidth = static_cast<int>(view->width * static_cast<float>(metrics.width));
     auto viewHeight = static_cast<int>(view->height * static_cast<float>(metrics.height));
     // If we need to process, we draw to the FBO which starts at point zero
-    renderer->setRenderRegion(process ? 0 : x, process ? 0 : y, viewWidth, viewHeight, !view->isRootView());
+    renderer->setRenderRegion(process ? 0 : x, process ? 0 : y, viewWidth, viewHeight, !view->isRootView() && !process);
 
     if (view->isRootView())
         sim->render(*renderer);
     else
         sim->render(*renderer, *view->observer);
 
-    // Viewport need to be reset to start from (x,y) instead of point zero
-    if (process && (x != 0 || y != 0))
-        renderer->setRenderRegion(x, y, viewWidth, viewHeight);
-
     if (process)
     {
         bool ok = true;
         for (int i = 0; i < nEffects; i++)
         {
+            FramebufferObject* dst;
+            if (i == nEffects - 1)
+            {
+                // The last effect renders to the screen FBO, needs to be reset
+                // to start from (x,y) instead of point zero
+                dst = &screenFbo.value();
+                if (x != 0 || y != 0)
+                    renderer->setRenderRegion(x, y, viewWidth, viewHeight);
+            }
+            else
+            {
+                dst = view->getFBO(i + 1);
+            }
+
             FramebufferObject* src = view->getFBO(i);
-            // Last effect renders to the screen FBO; intermediate effects render to the next FBO.
-            if (FramebufferObject* dst = (i + 1 < nEffects) ? view->getFBO(i + 1) : &screenFbo.value();
-                !viewportEffects[i]->prerender(renderer, src, dst) ||
+            if (!viewportEffects[i]->prerender(renderer, src, dst) ||
                 !viewportEffects[i]->render(renderer, src, viewWidth, viewHeight))
             {
                 GetLogger()->error("Unable to render viewport effect.\n");
@@ -2478,13 +2532,13 @@ bool CelestiaCore::initSimulation(const std::filesystem::path& configFileName,
 
     auto geometryPaths = std::make_shared<engine::GeometryPaths>();
     geometryManager = std::make_shared<engine::GeometryManager>(geometryPaths, texturePaths);
-    auto universe = std::make_unique<Universe>(geometryManager);
+    auto universe = std::make_unique<Universe>(geometryManager, std::make_unique<engine::UrlManager>());
 
     /***** Load star catalogs *****/
 
     StarDetails::SetStarTextures(config->starTextures);
 
-    std::unique_ptr<StarDatabase> starCatalog = loadStars(*config, progressNotifier, *geometryPaths, *texturePaths);
+    std::unique_ptr<StarDatabase> starCatalog = loadStars(*config, progressNotifier, *geometryPaths, *texturePaths, *universe->getUrlManager());
     if (starCatalog == nullptr)
     {
         fatalError(_("Cannot read star database."), false);
@@ -2494,7 +2548,7 @@ bool CelestiaCore::initSimulation(const std::filesystem::path& configFileName,
 
     /***** Load the deep sky catalogs *****/
 
-    std::unique_ptr<DSODatabase> dsoCatalog = loadDSO(*config, progressNotifier, *geometryPaths);
+    std::unique_ptr<DSODatabase> dsoCatalog = loadDSO(*config, progressNotifier, *geometryPaths, *universe->getUrlManager());
     if (dsoCatalog == nullptr)
     {
         fatalError(_("Cannot read DSO database."), false);
@@ -2504,7 +2558,7 @@ bool CelestiaCore::initSimulation(const std::filesystem::path& configFileName,
 
     /***** Load the solar system catalogs *****/
 
-    loadSSO(*config, progressNotifier, universe.get(), *geometryPaths, *texturePaths);
+    loadSSO(*config, progressNotifier, *universe, *geometryPaths, *texturePaths, *universe->getUrlManager());
 
     if (!config->paths.boundariesFile.empty())
     {
@@ -2693,17 +2747,7 @@ bool CelestiaCore::initRenderer(engine::TextureResolution resolution,
                                 std::optional<bool> sRGBRendering,
                                 [[maybe_unused]] bool useMesaPackInvert)
 {
-    // Resolve the effective sRGB rendering flag.
-    // On GLES 2.0, sRGB requires the EXT_sRGB extension.
-    // GLES 3.0+ has native sRGB support.
     gl::sRGBRendering = sRGBRendering.value_or(config->renderDetails.sRGBRendering);
-#ifdef GL_ES
-    if (gl::sRGBRendering && !gl::checkVersion(gl::GLES_3_0) && !gl::EXT_sRGB)
-    {
-        GetLogger()->warn("sRGB rendering requested but GL_EXT_sRGB is not available; disabling.\n");
-        gl::sRGBRendering = false;
-    }
-#endif
 
     if (gl::sRGBRendering)
     {

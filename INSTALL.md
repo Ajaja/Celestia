@@ -8,15 +8,18 @@ Stable version installation on Windows and OSX:
 * Check https://celestiaproject.space/download.html.
 
 Development snapshots installation on Unix-like systems:
-### On Debian 11/12 (bullseye/bookworm) and derived systems:
+
+[![build result](https://build.opensuse.org/projects/home:munix9:celestia:1.7/packages/celestia/badge.svg?type=percent)](https://build.opensuse.org/package/show/home:munix9:celestia:1.7/celestia)
+
+### On Debian 12/13/Testing (bookworm/trixie/forky) and derived systems:
 
 Download and check the GPG public key fingerprint and expiration date:
 ```
-❯ curl -fsSL -o celestia.gpg https://download.opensuse.org/repositories/home:/munix9:/unstable/Debian_${VERSION}/Release.key
+❯ curl -fsSL -o celestia.gpg https://download.opensuse.org/repositories/home:/munix9:/celestia:/1.7/Debian_${VERSION}/Release.key
 
 ❯ gpg --keyid-format long celestia.gpg
 gpg: WARNING: no command supplied.  Trying to guess what you mean ...
-pub   rsa2048/BDF3F6ACD4D81407 2014-06-09 [SC] [expires: 2025-04-10]
+pub   rsa2048/BDF3F6ACD4D81407 2014-06-09 [SC] [expires: 2027-06-06]
       3FE0C0AC1FD6F1034B818A14BDF3F6ACD4D81407
 uid                           home:munix9 OBS Project <home:munix9@build.opensuse.org>
 ```
@@ -25,62 +28,61 @@ Deploy GPG public key and set up sources.list file:
 ```
 ❯ sudo mv celestia.gpg /usr/share/keyrings/celestia.asc
 
-❯ echo "deb [signed-by=/usr/share/keyrings/celestia.asc] https://download.opensuse.org/repositories/home:/munix9:/unstable/Debian_${VERSION}/ ./" | sudo tee /etc/apt/sources.list.d/celestia-obs.list
+❯ echo "deb [signed-by=/usr/share/keyrings/celestia.asc] https://download.opensuse.org/repositories/home:/munix9:/celestia:/1.7/Debian_${VERSION}/ ./" | sudo tee /etc/apt/sources.list.d/celestia-obs.list
 ❯ sudo apt update && sudo apt install celestia
 ```
 
-Where ${VERSION} is 11 or 12.
+Where VERSION is 12, 13 or Testing.
 
 When the public key has expired, `apt update` complains:
 
 ```
 ❯ sudo apt update
 [...]
-Err:14 https://download.opensuse.org/repositories/home:/munix9:/unstable/Debian_11 ./ InRelease
+Err:14 https://download.opensuse.org/repositories/home:/munix9:/celestia:/1.7/Debian_13 ./ InRelease
   The following signatures were invalid: EXPKEYSIG BDF3F6ACD4D81407 home:munix9 OBS Project <home:munix9@build.opensuse.org>
 Fetched 19.0 kB in 1s (14.7 kB/s)
 Reading package lists... Done
 Building dependency tree... Done
 Reading state information... Done
 12 packages can be upgraded. Run 'apt list --upgradable' to see them.
-W: An error occurred during the signature verification. The repository is not updated and the previous index files will be used. GPG error: https://download.opensuse.org/repositories/home:/munix9:/unstable/Debian_11 ./ InRelease: The foll
+W: An error occurred during the signature verification. The repository is not updated and the previous index files will be used. GPG error: https://download.opensuse.org/repositories/home:/munix9:/celestia:/1.7/Debian_13 ./ InRelease: The foll
 owing signatures were invalid: EXPKEYSIG BDF3F6ACD4D81407 home:munix9 OBS Project <home:munix9@build.opensuse.org>
-W: Failed to fetch https://download.opensuse.org/repositories/home:/munix9:/unstable/Debian_11/./InRelease  The following signatures were invalid: EXPKEYSIG BDF3F6ACD4D81407 home:munix9 OBS Project <home:munix9@build.opensuse.org>
+W: Failed to fetch https://download.opensuse.org/repositories/home:/munix9:/celestia:/1.7/Debian_13/./InRelease  The following signatures were invalid: EXPKEYSIG BDF3F6ACD4D81407 home:munix9 OBS Project <home:munix9@build.opensuse.org>
 W: Some index files failed to download. They have been ignored, or old ones used instead.
 ```
 
 The `Release.key` should already have been updated.
 Just download the GPG public key again, check the fingerprint and expiration date and re-deploy it.
 
-### On Ubuntu 22.04/24.04 and derived systems:
+### On Ubuntu 22.04/24.04/26.04 and derived systems:
 
 ```
-curl https://download.opensuse.org/repositories/home:/munix9:/unstable/Ubuntu_${VERSION}/Release.key | sudo apt-key add -
-echo "deb https://download.opensuse.org/repositories/home:/munix9:/unstable/Ubuntu_${VERSION}/ ./" | sudo tee /etc/apt/sources.list.d/celestia-obs.list
+curl https://download.opensuse.org/repositories/home:/munix9:/celestia:/1.7/xUbuntu_${VERSION}/Release.key | sudo apt-key add -
+echo "deb https://download.opensuse.org/repositories/home:/munix9:/celestia:/1.7/xUbuntu_${VERSION}/ ./" | sudo tee /etc/apt/sources.list.d/celestia-obs.list
 sudo apt update && sudo apt install celestia
 ```
 
-Where VERSION is 22.04 or 24.04.
-
+Where VERSION is 22.04, 24.04 or 26.04.
 
 ### On openSUSE Leap/Tumbleweed:
 
 ```
-sudo zypper addrepo https://download.opensuse.org/repositories/home:munix9:unstable/${VERSION}/home:munix9:unstable.repo
+sudo zypper addrepo https://download.opensuse.org/repositories/home:/munix9:/celestia:/1.7/${VERSION}/home:munix9:celestia:1.7.repo
 sudo zypper refresh
 sudo zypper install celestia
 ```
 
-Where VERSION is '15.5', '15.6' or 'openSUSE_Tumbleweed'.
+Where VERSION is 15.6, 16.0, 16.1 or openSUSE_Tumbleweed.
 
-See also the download package sites on OBS for [celestia](https://software.opensuse.org/download.html?project=home:munix9:unstable&package=celestia) and [celestia-data](https://software.opensuse.org/download.html?project=home:munix9:unstable&package=celestia-data).
+See also the download package sites on OBS for [celestia](https://software.opensuse.org/download.html?project=home:munix9:celestia:1.7&package=celestia) and [celestia-data](https://software.opensuse.org/download.html?project=home:munix9:celestia:1.7&package=celestia-data).
 
 ### On other GNU/Linux distributions:
 
 Try experimental portable AppImage (see https://github.com/CelestiaProject/Celestia/issues/333):
 ```
-wget -O celestia-1.7.0-git-x86_64.AppImage https://download.opensuse.org/repositories/home:/munix9:/unstable/AppImage/celestia-latest-x86_64.AppImage
-chmod 755 celestia-1.7.0-git-x86_64.AppImage
+wget -O celestia-1.7-x86_64.AppImage https://download.opensuse.org/repositories/home:/munix9:/celestia:/1.7/AppImage/celestia-latest-x86_64.AppImage
+chmod 755 celestia-1.7-x86_64.AppImage
 ```
 
 Optionally create a portable, main version-independent `$HOME` directory in the same folder as the AppImage file:
@@ -89,7 +91,6 @@ mkdir celestia-1.7.home
 ```
 
 To build from sources please follow instructions below.
-
 
 
 ## Common building instructions
@@ -116,7 +117,7 @@ support for C++ filesystem library, e.g. GCC 8 or Clang 7.
 
 Then you need to have the following devel components installed before Celestia
 will build: OpenGL, libboost, libepoxy, fmtlib, Eigen3, freetype, libjpeg, and
-libpng. Optional packages are gettext, Qt5, Qt6, sdl2, ffmpeg, libavif, glu.
+libpng. Optional packages are gettext, Qt6, sdl2, ffmpeg, libavif, glu.
 
 Earlier compilers may not have support for the C++17 float charconv functions.
 On these systems, you will also need to install the fast_float library.
@@ -124,11 +125,11 @@ On these systems, you will also need to install the fast_float library.
 For example on modern Debian-derived system you need to install the following
 packages: libboost-dev, libepoxy-dev, libjpeg-dev, libpng-dev, libgl1-mesa-dev,
 libeigen3-dev, libfmt-dev, libfreetype6-dev. Then you may want to install
-libglu1-mesa-dev, required by some tools; qtbase5-dev, qtbase5-dev-tools and
-libqt5opengl5-dev if you want to build with Qt5 interface; or libsdl2-dev to
-build SDL interface. libavcodec-dev, libavformat-dev, libavutil-dev and
-libswscale-dev are required to build with video capture support. libavif-dev
-is required to build to AVIF texture support.
+libglu1-mesa-dev, required by some tools; qt6-base-dev qt6-base-dev-tools if
+you want to build with Qt6 interface; or libsdl2-dev to build SDL interface.
+libavcodec-dev, libavformat-dev, libavutil-dev and libswscale-dev are required
+to build with video capture support. libavif-dev is required to build with
+AVIF texture support.
 
 OK, assuming you've collected all the necessary libraries, here's
 what you need to do to build and run Celestia:
@@ -141,15 +142,11 @@ make
 sudo make install
 ```
 
-[*] `INTERFACE` must be replaced with one of "`QT5`", "`QT6`" or "`SDL`"
+[*] `INTERFACE` must be replaced with one of "`QT6`" or "`SDL`"
 
-Four interfaces are available for Celestia on Unix-like systems:
-- SDL: minimal interface, barebone Celestia core with no toolbar or menu...
-       Disabled by default.
-- QT5: A full interface with minimal dependencies, adds a menu, a configuration
-       dialog some other utilities, bookmarks... A preferred option. Enabled by
-       default, No need to pass -DENABLE_QT5=ON.
-- QT6: As above, but compiled with Qt6.
+Two interfaces are available for Celestia on Unix-like systems:
+- QT6: The preferred interface with full features.
+- SDL: Minimal interface with a basic user interface.
 
 Starting with version 1.3.1, Lua is the new scripting engine for Celestia,
 the old homegrown scripting engine is still available. By default Lua support
@@ -200,7 +197,7 @@ Optional packages:
 * icu
 * libavif
 * meshoptimizer
-* qtbase
+* qtbase\[windeployqt\]
 
 In Visual Studio Code, create the workspace settings file at
 .vscode\settings.json and add the following sections:
@@ -273,15 +270,15 @@ pacman -S mingw-w64-x86_64-toolchain
 pacman -S base-devel
 pacman -S git
 pacman -S mingw-w64-x86_64-cmake
-pacman -S mingw-w64-x86_64-qt5
 pacman -S mingw-w64-x86_64-libepoxy mingw-w64-x86_64-lua
 pacman -S mingw-w64-x86_64-mesa
+pacman -S mingw-w64-x86_64-fmt mingw-w64-x86_64-eigen3 mingw-w64-x86_64-luajit
 ```
 
 Install optional packages:
 
 ```
-pacman -S mingw-w64-x86_64-fmt mingw-w64-x86_64-eigen3 mingw-w64-x86_64-luajit
+pacman -S mingw-w64-x86_64-qt6
 pacman -S mingw-w64-x86_64-sdl2
 ```
 
@@ -329,7 +326,7 @@ Install Homebrew
 Install required packages:
 
 ```
-brew install pkg-config cmake fast_float fmt gettext gperf libepoxy libpng lua qt5 jpeg eigen freetype boost
+brew install pkg-config cmake fast_float fmt gettext gperf libepoxy libpng lua qt@6 jpeg eigen freetype boost
 ```
 
 Install optional packages:
@@ -373,7 +370,6 @@ List of supported parameters (passed as `-DPARAMETER=VALUE`):
 | ENABLE_CELX          | bool | ON        | Enable Lua scripting support
 | ENABLE_SPICE         | bool | OFF       | Enable NAIF kernels support
 | ENABLE_NLS           | bool | ON        | Enable interface translation
-| ENABLE_QT5           | bool | OFF       | Build Qt5 frontend
 | ENABLE_QT6           | bool | OFF       | Build Qt6 frontend
 | ENABLE_SDL           | bool | OFF       | Build SDL frontend
 | ENABLE_WIN           | bool | \*\*\*OFF | Build Windows native frontend
@@ -381,7 +377,7 @@ List of supported parameters (passed as `-DPARAMETER=VALUE`):
 | ENABLE_LIBAVIF       | bool | OFF       | Support AVIF texture using libavif
 | ENABLE_MINIAUDIO     | bool | OFF       | Support audio playback using miniaudio
 | ENABLE_TOOLS         | bool | OFF       | Build tools for Celestia data files
-| ENABLE_GLES          | bool | OFF       | Use OpenGL ES 2.0 in rendering code
+| ENABLE_GLES          | bool | OFF       | Use OpenGL ES 3.0 in rendering code
 | USE_QT6              | bool | OFF       | Use Qt6 in Qt frontend
 | USE_ICU              | bool | OFF       | Use ICU for UTF8 decoding for text rendering
 | USE_MESHOPTIMIZER    | bool | OFF       | Use meshoptimizer when loading models
@@ -401,10 +397,8 @@ On Windows systems two additonal options are supported:
 - `CMAKE_TOOLCHAIN_FILE` - location of vcpkg.cmake if vcpkg is used.
 
 Please note that not all options are compatible:
-- `ENABLE_GLES` is not compatible with `ENABLE_QT5` or `ENABLE_QT6` if your Qt
-  installation doesn't support OpenGL ES.
-- `ENABLE_QT5` and `ENABLE_QT6` are not compatible on Apple systems due to
-  include path conflicts.
+- `ENABLE_GLES` is not compatible with `ENABLE_QT6` if your Qt installation
+  doesn't support OpenGL ES.
 
 ## Installing the content
 
@@ -436,7 +430,6 @@ Here's the table which provides executable file names accordingly to interface:
 
  Interface  | Executable name
 |-----------|----------------|
-| Qt5       | celestia-qt5
 | Qt6       | celestia-qt6
 | SDL       | celestia-sdl
 | WIN       | celestia-win

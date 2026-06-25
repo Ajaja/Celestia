@@ -55,7 +55,6 @@ constexpr int ShadowBufferSize = 1024;
 constexpr int ShadowSampleKernelWidth = 2;
 
 constexpr GLuint TangentAttributeIndex = 6;
-constexpr GLuint PointSizeAttributeIndex = 7;
 
 // Calculate the matrix used to render the model from the
 // perspective of the light.
@@ -509,32 +508,18 @@ ModelViewWidget::setRenderStyle(RenderStyle style)
 void
 ModelViewWidget::mousePressEvent(QMouseEvent *event)
 {
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    m_lastMousePosition = event->pos();
-    m_mouseDownPosition = event->pos();
-#else
     m_lastMousePosition = event->position();
     m_mouseDownPosition = event->position();
-#endif
 }
 
 void
 ModelViewWidget::mouseReleaseEvent(QMouseEvent* event)
 {
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    int moveDistance = (event->pos() - m_mouseDownPosition).manhattanLength();
-    constexpr int threshold = 3;
-#else
     qreal moveDistance = (event->position() - m_mouseDownPosition).manhattanLength();
     constexpr auto threshold = qreal(3);
-#endif
     if (moveDistance < threshold)
     {
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-        auto position = event->pos();
-#else
         auto position = event->position();
-#endif
         float x = static_cast<float>(position.x()) / static_cast<float>(size().width()) * 2.0f - 1.0f;
         float y = static_cast<float>(position.y()) / static_cast<float>(size().height()) * -2.0f + 1.0f;
         select(Eigen::Vector2f(x, y));
@@ -565,11 +550,7 @@ ModelViewWidget::mouseMoveEvent(QMouseEvent *event)
         rotateLights = true;
     }
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    auto delta = event->pos() - m_lastMousePosition;
-#else
     auto delta = event->position() - m_lastMousePosition;
-#endif
 
     double xrotation = static_cast<double>(delta.y()) / 100.0;
     double yrotation = static_cast<double>(delta.x()) / 100.0;
@@ -591,11 +572,7 @@ ModelViewWidget::mouseMoveEvent(QMouseEvent *event)
         m_cameraOrientation = r * m_cameraOrientation;
     }
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    m_lastMousePosition = event->pos();
-#else
     m_lastMousePosition = event->position();
-#endif
 
     update();
 }
@@ -863,8 +840,8 @@ ModelViewWidget::setShadows(bool enable)
         if (m_shadowsEnabled && m_shadowBuffers.size() < 2)
         {
             makeCurrent();
-            auto* fb0 = new FramebufferObject(ShadowBufferSize, ShadowBufferSize, FramebufferObject::DepthAttachment);
-            auto* fb1 = new FramebufferObject(ShadowBufferSize, ShadowBufferSize, FramebufferObject::DepthAttachment);
+            auto* fb0 = new FramebufferObject(ShadowBufferSize, ShadowBufferSize, FramebufferObject::Attachment::Depth);
+            auto* fb1 = new FramebufferObject(ShadowBufferSize, ShadowBufferSize, FramebufferObject::Attachment::Depth);
             m_shadowBuffers << fb0 << fb1;
             if (!fb0->isValid() || !fb1->isValid())
             {
